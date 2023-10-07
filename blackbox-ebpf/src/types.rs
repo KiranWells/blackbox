@@ -1,17 +1,24 @@
+#![allow(dead_code)]
 use aya_bpf::{
     bindings::pt_regs,
-    cty::c_ulong,
+    cty::{c_uint, c_ulong},
     helpers::{bpf_probe_read, bpf_probe_read_kernel},
     programs::RawTracePointContext,
     BpfContext,
 };
 use aya_log_ebpf::error;
 
+/// A general error enum for error handling
 #[derive(Clone, Copy)]
 pub enum EbpfError {
+    /// Should be used when reading from memory
     Read,
+    /// Should be used when extracting arguments from registers
     Arg(usize),
+    /// Should only be used where it guarantees a logic error occurred, such as where you would
+    /// normally panic
     Logic,
+    /// Used when accessing a buffer map
     Map,
 }
 
@@ -34,6 +41,7 @@ impl EbpfError {
     }
 }
 
+/// Parsed arguments passed to the sys_enter raw tracepoint
 pub struct SysEnterCtx {
     pub regs: *mut pt_regs,
     pub id: c_ulong,
@@ -56,6 +64,7 @@ impl TryFrom<&RawTracePointContext> for SysEnterCtx {
 }
 
 impl SysEnterCtx {
+    /// gets a function argument from the registers with an index `n`
     pub fn arg(&self, n: usize) -> Result<c_ulong, EbpfError> {
         let ctx = unsafe { &*self.regs };
         match n {
@@ -70,6 +79,7 @@ impl SysEnterCtx {
     }
 }
 
+/// Parsed arguments passed to the sys_exit raw tracepoint
 pub struct SysExitCtx {
     pub regs: *mut pt_regs,
     pub id: c_ulong,
@@ -97,6 +107,7 @@ impl TryFrom<&RawTracePointContext> for SysExitCtx {
 }
 
 impl SysExitCtx {
+    /// gets a function argument from the registers with an index `n`
     pub fn arg(&self, n: usize) -> Result<c_ulong, EbpfError> {
         let ctx = unsafe { &*self.regs };
         match n {
@@ -109,37 +120,29 @@ impl SysExitCtx {
             _ => Err(EbpfError::Logic),
         }
     }
+
+    /// gets a function return value from the arguments
     pub fn ret(&self) -> Result<c_ulong, EbpfError> {
         let ctx = unsafe { &*self.regs };
         unsafe { bpf_probe_read(&ctx.rax).map_err(|_| EbpfError::Read) }
     }
 }
 
-pub struct SysEnterArgs {
-    pub args: [u64; 6],
-    pub syscall_id: u64,
+/// Arguments for the sys_read and sys_write args
+pub struct SysReadArgs {
+    pub fd: c_uint,
+    pub user_buf: *const u8,
+    pub count: usize,
 }
 
-impl TryFrom<&RawTracePointContext> for SysEnterArgs {
+impl TryFrom<&SysExitCtx> for SysReadArgs {
     type Error = EbpfError;
-    fn try_from(ctx: &RawTracePointContext) -> Result<Self, Self::Error> {
-        let pt_regs = unsafe {
-            &*bpf_probe_read_kernel(ctx.as_ptr() as *const *mut pt_regs)
-                .map_err(|_| EbpfError::Read)?
-        };
 
-        let address = unsafe { (ctx.as_ptr() as *const c_ulong).offset(1) };
-        let id = unsafe { bpf_probe_read_kernel(address).map_err(|_| EbpfError::Read) }?;
+    fn try_from(data: &SysExitCtx) -> Result<Self, Self::Error> {
         Ok(Self {
-            args: [
-                unsafe { bpf_probe_read(&pt_regs.rdi) }.map_err(|_| EbpfError::Arg(0))?,
-                unsafe { bpf_probe_read(&pt_regs.rsi) }.map_err(|_| EbpfError::Arg(1))?,
-                unsafe { bpf_probe_read(&pt_regs.rdx) }.map_err(|_| EbpfError::Arg(2))?,
-                unsafe { bpf_probe_read(&pt_regs.rcx) }.map_err(|_| EbpfError::Arg(3))?,
-                unsafe { bpf_probe_read(&pt_regs.r8) }.map_err(|_| EbpfError::Arg(4))?,
-                unsafe { bpf_probe_read(&pt_regs.r9) }.map_err(|_| EbpfError::Arg(5))?,
-            ],
-            syscall_id: id,
+            fd: data.arg(0)? as c_uint,
+            user_buf: data.arg(1)? as *const u8,
+            count: data.arg(2)? as usize,
         })
     }
 }
