@@ -8,12 +8,19 @@ publish = false
 aya = { git = "https://github.com/aya-rs/aya", features = ["async_tokio"] }
 aya-log = { git = "https://github.com/aya-rs/aya" }
 blackbox-common = { path = "../blackbox-common", features = ["user"] }
-anyhow = "1"
 env_logger = "0.10"
 libc = "0.2"
 log = "0.4"
-tokio = { version = "1.25", features = ["macros", "rt", "rt-multi-thread", "net", "signal"] }
+tokio = { version = "1.25", features = [
+    "macros",
+    "rt",
+    "rt-multi-thread",
+    "net",
+    "signal",
+    "sync",
+] }
 clap = { version = "4.4.6", features = ["derive"] }
+color-eyre = "0.6.2"
 
 [[bin]]
 name = "blackbox"

@@ -1,8 +1,13 @@
+mod processing;
+mod tracing;
+mod types;
+
 use aya::maps::Array;
 use aya::programs::RawTracePoint;
 use aya::{include_bytes_aligned, Bpf};
 use aya_log::BpfLogger;
 use clap::Parser;
+use color_eyre::eyre::Result;
 use log::{debug, info, warn};
 use tokio::signal;
 
@@ -16,8 +21,9 @@ struct Args {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), anyhow::Error> {
+async fn main() -> Result<()> {
     env_logger::init();
+    color_eyre::install()?;
 
     let args = Args::parse();
 
@@ -59,7 +65,20 @@ async fn main() -> Result<(), anyhow::Error> {
     let mut traced_pids: aya::maps::array::Array<_, u32> =
         Array::try_from(bpf.map_mut("PIDS").unwrap())?;
 
-    traced_pids.set(0, &args.pid, 0)?;
+    traced_pids.set(0, args.pid, 0)?;
+
+    // create message queue
+    let (tx, rx) = tokio::sync::mpsc::channel(100);
+
+    // the tracing has started
+    let tracing_job = tokio::spawn(tracing::start_tracing(bpf, tx));
+    let processing_job = tokio::spawn(processing::start_processing(rx));
+
+    // run both jobs in parallel
+    let _ = tokio::try_join!(tracing_job, processing_job)?;
+
+    // display info to UI
+    // TODO
 
     info!("Waiting for Ctrl-C...");
     signal::ctrl_c().await?;
