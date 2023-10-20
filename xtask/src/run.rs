@@ -14,7 +14,8 @@ pub struct Options {
     #[clap(long)]
     pub release: bool,
     /// The command used to wrap your application
-    #[clap(short, long, default_value = "sudo -E")]
+    // #[clap(short, long, default_value = "sudo -E")]
+    #[clap(short, long, default_value = "")]
     pub runner: String,
     /// Arguments to pass to your application
     #[clap(name = "args", last = true)]
