@@ -1,7 +1,9 @@
+use std::ffi::OsString;
+
 use aya::Bpf;
 use color_eyre::eyre::Result;
 
-use crate::types::TraceEvent;
+use crate::types::{Event, TraceEvent};
 
 pub async fn start_tracing(_bpf: Bpf, tx: tokio::sync::mpsc::Sender<TraceEvent>) -> Result<()> {
     // collect trace events
@@ -10,10 +12,12 @@ pub async fn start_tracing(_bpf: Bpf, tx: tokio::sync::mpsc::Sender<TraceEvent>)
         let t = TraceEvent {
             pid: 0,
             thread_id: 0,
-            enter: true,
+            monotonic_timestamp: i,
+            event: Event::Enter,
             event_type: crate::types::EventType::Open(crate::types::OpenData {
-                filename: format!("file_{}", i),
-                file_descriptor: i,
+                filename: OsString::new(),
+                file_descriptor: None,
+                flags: 0,
             }),
         };
 
