@@ -3,7 +3,7 @@ use std::ffi::OsString;
 #[derive(Debug, Clone)]
 pub struct OpenData {
     // This may be different binary layout from the String type
-    pub filename: OsString,
+    pub filename: Option<OsString>,
     /// The flags for the open call. See man open(2) for details
     pub flags: i32,
     /// A file descriptor or the error return value
@@ -37,7 +37,7 @@ pub struct WriteData {
 pub struct CloseData {
     pub file_descriptor: i32,
     /// Success or the returned error
-    pub return_val: Option<Result<(), isize>>,
+    pub return_val: Option<Result<(), i32>>,
 }
 
 #[derive(Debug, Clone)]
@@ -67,6 +67,13 @@ pub struct ForkData {
 }
 
 #[derive(Debug, Clone)]
+pub struct ExitData {
+    /// The status value returned from the process to the operating sytem.
+    /// The value status & 0xFF is returned to the parent process.
+    pub status: i32,
+}
+
+#[derive(Debug, Clone)]
 pub struct UnhandledSyscallData {
     pub syscall_id: u64,
     pub arg_0: u64,
@@ -88,6 +95,7 @@ pub enum EventType {
     Socket(SocketData),
     Shutdown(ShutdownData),
     Fork(ForkData),
+    Exit(ExitData),
     Unhandled(UnhandledSyscallData),
 }
 
@@ -103,6 +111,7 @@ pub struct TraceEvent {
     pub pid: u32,
     /// The thread ID, also the process ID in kernel space
     pub thread_id: u32,
+    /// Whether the event is an enter or exit
     pub event: Event,
     /// the value returned by bpf_ktime_get_ns: nanoseconds running since boot
     pub monotonic_timestamp: u64,
