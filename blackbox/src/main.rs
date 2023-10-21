@@ -4,8 +4,7 @@ mod types;
 
 use clap::Parser;
 use color_eyre::eyre::Result;
-use log::{debug, info, warn};
-use tokio::signal;
+use log::info;
 
 /// Simple program to greet a person
 #[derive(Parser, Debug)]
@@ -38,17 +37,16 @@ async fn main() -> Result<()> {
     let (tx, rx) = tokio::sync::mpsc::channel(100);
 
     // spawn the processes in parallel
-    let tracing_job = tokio::spawn(tracing::start_tracing(args.pid, tx));
-    let processing_job = tokio::spawn(processing::start_processing(rx));
+    let _tracing_job = tokio::spawn(tracing::start_tracing(args.pid, tx));
+    let _processing_job = tokio::spawn(processing::start_processing(rx));
 
     // display info to UI
     // TODO
-
     info!("Waiting for Ctrl-C...");
-    signal::ctrl_c().await?;
+    tokio::signal::ctrl_c().await?;
     info!("Exiting...");
 
     // wait for both processes; we only care aboud errors
-    let _ = tokio::try_join!(tracing_job, processing_job)?;
+    // let _ = tokio::try_join!(tracing_job, processing_job)?;
     Ok(())
 }
