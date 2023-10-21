@@ -104,3 +104,38 @@ impl GetEventId for SyscallEvent {
         }
     }
 }
+
+#[repr(u16)]
+pub enum SyscallID {
+    Read = 0,
+    Write = 1,
+    Open = 2,
+    Close = 3,
+    Socket = 41,
+    Shutdown = 48,
+    Fork = 57,
+    Exit = 60,
+    Unhandled,
+}
+
+impl<T> From<T> for SyscallID
+where
+    T: TryInto<u16>,
+{
+    fn from(value: T) -> Self {
+        let Ok(num): Result<u16, _> = value.try_into() else {
+            return Self::Unhandled;
+        };
+        match num {
+            0 => Self::Read,
+            1 => Self::Write,
+            2 => Self::Open,
+            3 => Self::Close,
+            41 => Self::Socket,
+            48 => Self::Shutdown,
+            57 => Self::Fork,
+            60 => Self::Exit,
+            _ => Self::Unhandled,
+        }
+    }
+}
