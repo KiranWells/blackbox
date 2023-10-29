@@ -1,5 +1,6 @@
 use std::ffi::OsString;
 
+// TODO: add dirfd and mode if needed
 #[derive(Debug, Clone)]
 pub struct OpenData {
     // This may be different binary layout from the String type

@@ -5,7 +5,7 @@ mod handlers;
 mod types;
 
 use aya_log_ebpf::debug;
-use blackbox_common::{EventBuffer, SyscallEvent};
+use blackbox_common::{EventBuffer, SyscallEvent, SyscallID};
 use handlers::sys_read_write_handler;
 use types::{EbpfError, SysExitCtx};
 
@@ -16,7 +16,7 @@ use aya_bpf::{
     programs::RawTracePointContext,
 };
 
-use crate::types::SysEnterCtx;
+use crate::{handlers::sys_open_handler, types::SysEnterCtx};
 
 #[map]
 static mut PIDS: Array<u32> = Array::with_max_entries(128, 0);
@@ -62,10 +62,18 @@ fn try_handle_sys_enter(ctx: &RawTracePointContext) -> Result<(), EbpfError> {
     let syscall_event = SyscallEvent::try_from(&typed_ctx)?;
     debug!(ctx, "Received enter event with id: {}", typed_ctx.id);
 
-    match typed_ctx.id {
-        0 => send_event(ctx, &syscall_event),
-        1 => sys_read_write_handler(ctx, syscall_event).map(|_| ()),
-        _ => send_event(ctx, &syscall_event),
+    match typed_ctx.id.into() {
+        SyscallID::Read => send_event(ctx, &syscall_event),
+        SyscallID::Write => sys_read_write_handler(ctx, syscall_event).map(|_| ()),
+        SyscallID::Open => sys_open_handler(ctx, syscall_event).map(|_| ()),
+        SyscallID::OpenAt => sys_open_handler(ctx, syscall_event).map(|_| ()),
+        SyscallID::Close => send_event(ctx, &syscall_event),
+        SyscallID::Socket => send_event(ctx, &syscall_event),
+        SyscallID::Shutdown => send_event(ctx, &syscall_event),
+        SyscallID::Fork => send_event(ctx, &syscall_event),
+        SyscallID::Exit => send_event(ctx, &syscall_event),
+        SyscallID::ExitGroup => send_event(ctx, &syscall_event),
+        SyscallID::Unhandled => send_event(ctx, &syscall_event),
     }?;
     Ok(())
 }
@@ -96,10 +104,18 @@ fn try_handle_sys_exit(ctx: &RawTracePointContext) -> Result<(), EbpfError> {
     let syscall_event = SyscallEvent::try_from(&typed_ctx)?;
     debug!(ctx, "Received exit event with id: {}", typed_ctx.id);
 
-    match typed_ctx.id {
-        0 => sys_read_write_handler(ctx, syscall_event).map(|_| ()),
-        1 => send_event(ctx, &syscall_event),
-        _ => send_event(ctx, &syscall_event),
+    match typed_ctx.id.into() {
+        SyscallID::Read => sys_read_write_handler(ctx, syscall_event).map(|_| ()),
+        SyscallID::Write => send_event(ctx, &syscall_event),
+        SyscallID::Open => send_event(ctx, &syscall_event),
+        SyscallID::OpenAt => send_event(ctx, &syscall_event),
+        SyscallID::Close => send_event(ctx, &syscall_event),
+        SyscallID::Socket => send_event(ctx, &syscall_event),
+        SyscallID::Shutdown => send_event(ctx, &syscall_event),
+        SyscallID::Fork => send_event(ctx, &syscall_event),
+        SyscallID::Exit => send_event(ctx, &syscall_event),
+        SyscallID::ExitGroup => send_event(ctx, &syscall_event),
+        SyscallID::Unhandled => send_event(ctx, &syscall_event),
     }?;
     Ok(())
 }

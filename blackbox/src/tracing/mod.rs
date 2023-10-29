@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::ffi::OsString;
 use std::mem::size_of;
 use std::os::unix::prelude::OsStringExt;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use aya::maps::{Array, AsyncPerfEventArray};
@@ -35,13 +36,15 @@ pub async fn start_tracing(pid: u32, tx: tokio::sync::mpsc::Sender<TraceEvent>) 
         let movable_buffer_staging = buffer_staging.clone();
         let movable_event_staging = event_staging.clone();
         let movable_tx = tx.clone();
+        let done_outer = Arc::new(AtomicBool::new(false));
+        let done = done_outer.clone();
 
         handles.push(tokio::task::spawn(async move {
             let mut buffers = (0..16)
                 .map(|_| BytesMut::with_capacity(size_of::<SyscallEvent>()))
                 .collect::<Vec<_>>();
 
-            loop {
+            'outer: loop {
                 // wait for events
                 let events = buf.read_events(&mut buffers).await?;
 
@@ -63,7 +66,12 @@ pub async fn start_tracing(pid: u32, tx: tokio::sync::mpsc::Sender<TraceEvent>) 
                         // debug!("unlocked buffer");
 
                         match associated_buffer {
-                            Some(expr) => send_event(payload, Some(expr), &movable_tx).await?,
+                            Some(expr) => {
+                                if send_event(payload, Some(expr), &movable_tx).await? {
+                                    done.swap(true, Ordering::Release);
+                                    break 'outer;
+                                }
+                            }
                             None => {
                                 // if there is no data, we need to wait for it. We'll save this for
                                 // later
@@ -77,13 +85,19 @@ pub async fn start_tracing(pid: u32, tx: tokio::sync::mpsc::Sender<TraceEvent>) 
                         }
                     } else {
                         // If there is no associated_buffer, we don't need to wait for it
-                        send_event(payload, None, &movable_tx).await?;
+                        if send_event(payload, None, &movable_tx).await? {
+                            done.swap(true, Ordering::Release);
+                            break 'outer;
+                        }
                     }
                 }
+                if done.load(Ordering::Acquire) {
+                    break;
+                }
             }
+            debug!("after loop: events");
 
             // This is necessary to tell the compiler what type this block returns
-            #[allow(unreachable_code)]
             Ok::<(), Report>(())
         }));
 
@@ -91,12 +105,13 @@ pub async fn start_tracing(pid: u32, tx: tokio::sync::mpsc::Sender<TraceEvent>) 
         let movable_buffer_staging = buffer_staging.clone();
         let movable_event_staging = event_staging.clone();
         let movable_tx = tx.clone();
+        let done = done_outer.clone();
         handles.push(tokio::task::spawn(async move {
             let mut buffers = (0..16)
                 .map(|_| BytesMut::with_capacity(size_of::<EventBuffer>()))
                 .collect::<Vec<_>>();
 
-            loop {
+            'outer: loop {
                 // wait for events
                 let events = buf.read_events(&mut buffers).await?;
 
@@ -115,7 +130,12 @@ pub async fn start_tracing(pid: u32, tx: tokio::sync::mpsc::Sender<TraceEvent>) 
                     // debug!("unlocked event");
 
                     match associated_buffer {
-                        Some(expr) => send_event(expr, Some(payload), &movable_tx).await?,
+                        Some(expr) => {
+                            if send_event(expr, Some(payload), &movable_tx).await? {
+                                done.swap(true, Ordering::Release);
+                                break 'outer;
+                            }
+                        }
                         None => {
                             // if there is no event, we need to wait for it. We'll save this for
                             // later
@@ -128,15 +148,18 @@ pub async fn start_tracing(pid: u32, tx: tokio::sync::mpsc::Sender<TraceEvent>) 
                         }
                     }
                 }
+                if done.load(Ordering::Acquire) {
+                    break;
+                }
             }
+            debug!("after loop: buffers");
 
             // This is necessary to tell the compiler what type this block returns
-            #[allow(unreachable_code)]
             Ok::<(), Report>(())
         }));
     }
 
-    // TODO: handle the fact that these will never rejoin if working correctly
+    // TODO: handle the fact that these will never rejoin if stuck awaiting events
     for handle in handles {
         handle.await??;
     }
@@ -148,7 +171,7 @@ async fn send_event(
     event: SyscallEvent,
     buffer: Option<EventBuffer>,
     tx: &tokio::sync::mpsc::Sender<TraceEvent>,
-) -> Result<()> {
+) -> Result<bool> {
     let mut data = None;
     if let Some(buffer) = buffer {
         assert!(event.has_data(), "Recieved data for an event with no data!");
@@ -183,6 +206,17 @@ async fn send_event(
         SyscallID::Open => EventType::Open(OpenData {
             filename: data.map(OsString::from_vec),
             flags: event.arg_1 as i32,
+            file_descriptor: event.return_val.map(|r| {
+                if (r as i32) < 0 {
+                    Err(r as i32)
+                } else {
+                    Ok(r as u32)
+                }
+            }),
+        }),
+        SyscallID::OpenAt => EventType::Open(OpenData {
+            filename: data.map(OsString::from_vec),
+            flags: event.arg_2 as i32,
             file_descriptor: event.return_val.map(|r| {
                 if (r as i32) < 0 {
                     Err(r as i32)
@@ -236,6 +270,9 @@ async fn send_event(
         SyscallID::Exit => EventType::Exit(crate::types::ExitData {
             status: event.arg_0 as i32,
         }),
+        SyscallID::ExitGroup => EventType::Exit(crate::types::ExitData {
+            status: event.arg_0 as i32,
+        }),
         SyscallID::Unhandled => EventType::Unhandled(crate::types::UnhandledSyscallData {
             syscall_id: event.syscall_id,
             arg_0: event.arg_0,
@@ -247,6 +284,7 @@ async fn send_event(
             return_val: event.return_val,
         }),
     };
+    let is_process_exit = matches!(event_data, EventType::Exit(_));
 
     let event_to_send = TraceEvent {
         pid: event.tgid,
@@ -261,7 +299,7 @@ async fn send_event(
     };
 
     tx.send(event_to_send).await?;
-    Ok(())
+    Ok(is_process_exit)
 }
 
 fn init_bpf(pid: u32) -> Result<Bpf> {

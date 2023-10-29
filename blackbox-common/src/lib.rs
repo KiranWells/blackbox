@@ -110,11 +110,13 @@ pub enum SyscallID {
     Read = 0,
     Write = 1,
     Open = 2,
+    OpenAt = 257,
     Close = 3,
     Socket = 41,
     Shutdown = 48,
     Fork = 57,
     Exit = 60,
+    ExitGroup = 231,
     Unhandled,
 }
 
@@ -130,11 +132,13 @@ where
             0 => Self::Read,
             1 => Self::Write,
             2 => Self::Open,
+            257 => Self::OpenAt,
             3 => Self::Close,
             41 => Self::Socket,
             48 => Self::Shutdown,
             57 => Self::Fork,
             60 => Self::Exit,
+            231 => Self::ExitGroup,
             _ => Self::Unhandled,
         }
     }
