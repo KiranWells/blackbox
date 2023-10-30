@@ -116,7 +116,7 @@ fn read_string_and_send(
     let result_slice =
         unsafe { bpf_probe_read_user_str_bytes(ptr, dest).map_err(|_| EbpfError::Read)? };
     debug!(ctx, "Sending buffer of len: {}", result_slice.len());
-    if result_slice.len() > 0 {
+    if result_slice.is_empty() {
         unsafe {
             BUFFER_OUTPUT.output(ctx, data_buffer, 0);
         }

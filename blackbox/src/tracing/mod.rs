@@ -16,6 +16,8 @@ use bytes::BytesMut;
 use color_eyre::eyre::Result;
 use color_eyre::Report;
 use log::{debug, info, warn};
+use nix::sys::signal::Signal;
+
 use tokio::sync::Mutex;
 
 use crate::types::{
@@ -23,6 +25,7 @@ use crate::types::{
 };
 
 pub async fn start_tracing(pid: u32, tx: tokio::sync::mpsc::Sender<TraceEvent>) -> Result<()> {
+    tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
     let event_staging = Arc::new(Mutex::new(HashMap::<EventID, SyscallEvent>::new()));
     let buffer_staging = Arc::new(Mutex::new(HashMap::<EventID, EventBuffer>::new()));
     let mut bpf = init_bpf(pid)?;
@@ -38,6 +41,8 @@ pub async fn start_tracing(pid: u32, tx: tokio::sync::mpsc::Sender<TraceEvent>) 
         let movable_tx = tx.clone();
         let done_outer = Arc::new(AtomicBool::new(false));
         let done = done_outer.clone();
+        let start_time = Arc::new(Mutex::new(None));
+        let start_time_clone = start_time.clone();
 
         handles.push(tokio::task::spawn(async move {
             let mut buffers = (0..16)
@@ -55,6 +60,16 @@ pub async fn start_tracing(pid: u32, tx: tokio::sync::mpsc::Sender<TraceEvent>) 
                         let ptr = buf.as_ptr() as *const SyscallEvent;
                         (*ptr).clone()
                     };
+                    {
+                        let mut st = start_time_clone.lock().await;
+
+                        if st.is_none()
+                            && payload.syscall_id == SyscallID::Execve as u64
+                            && payload.is_enter()
+                        {
+                            *st = Some(payload.timestamp)
+                        }
+                    }
 
                     if payload.has_data() {
                         // get the associated data
@@ -67,7 +82,14 @@ pub async fn start_tracing(pid: u32, tx: tokio::sync::mpsc::Sender<TraceEvent>) 
 
                         match associated_buffer {
                             Some(expr) => {
-                                if send_event(payload, Some(expr), &movable_tx).await? {
+                                if send_event(
+                                    payload,
+                                    Some(expr),
+                                    &movable_tx,
+                                    start_time_clone.clone(),
+                                )
+                                .await?
+                                {
                                     done.swap(true, Ordering::Release);
                                     break 'outer;
                                 }
@@ -85,7 +107,7 @@ pub async fn start_tracing(pid: u32, tx: tokio::sync::mpsc::Sender<TraceEvent>) 
                         }
                     } else {
                         // If there is no associated_buffer, we don't need to wait for it
-                        if send_event(payload, None, &movable_tx).await? {
+                        if send_event(payload, None, &movable_tx, start_time_clone.clone()).await? {
                             done.swap(true, Ordering::Release);
                             break 'outer;
                         }
@@ -106,6 +128,7 @@ pub async fn start_tracing(pid: u32, tx: tokio::sync::mpsc::Sender<TraceEvent>) 
         let movable_event_staging = event_staging.clone();
         let movable_tx = tx.clone();
         let done = done_outer.clone();
+        let start_time_clone = start_time.clone();
         handles.push(tokio::task::spawn(async move {
             let mut buffers = (0..16)
                 .map(|_| BytesMut::with_capacity(size_of::<EventBuffer>()))
@@ -131,7 +154,14 @@ pub async fn start_tracing(pid: u32, tx: tokio::sync::mpsc::Sender<TraceEvent>) 
 
                     match associated_buffer {
                         Some(expr) => {
-                            if send_event(expr, Some(payload), &movable_tx).await? {
+                            if send_event(
+                                expr,
+                                Some(payload),
+                                &movable_tx,
+                                start_time_clone.clone(),
+                            )
+                            .await?
+                            {
                                 done.swap(true, Ordering::Release);
                                 break 'outer;
                             }
@@ -158,6 +188,10 @@ pub async fn start_tracing(pid: u32, tx: tokio::sync::mpsc::Sender<TraceEvent>) 
             Ok::<(), Report>(())
         }));
     }
+    // ready.wait();
+    info!("before wait");
+    unsafe { nix::libc::kill(pid as i32, Signal::SIGCONT as i32) };
+    info!("after wait");
 
     // TODO: handle the fact that these will never rejoin if stuck awaiting events
     for handle in handles {
@@ -171,7 +205,20 @@ async fn send_event(
     event: SyscallEvent,
     buffer: Option<EventBuffer>,
     tx: &tokio::sync::mpsc::Sender<TraceEvent>,
+    start_time: Arc<Mutex<Option<u64>>>,
 ) -> Result<bool> {
+    {
+        let st = start_time.lock().await;
+        if let Some(timestamp) = *st {
+            if event.timestamp < timestamp {
+                return Ok(false);
+            }
+        } else {
+            // TODO: sometimes this doesn't work properly??
+            debug!("timestamp is none!");
+            return Ok(false);
+        }
+    }
     let mut data = None;
     if let Some(buffer) = buffer {
         assert!(event.has_data(), "Recieved data for an event with no data!");
@@ -266,6 +313,16 @@ async fn send_event(
                     Ok(r as u32)
                 }
             }),
+        }),
+        SyscallID::Execve => EventType::Unhandled(crate::types::UnhandledSyscallData {
+            syscall_id: event.syscall_id,
+            arg_0: event.arg_0,
+            arg_1: event.arg_1,
+            arg_2: event.arg_2,
+            arg_3: event.arg_3,
+            arg_4: event.arg_4,
+            arg_5: event.arg_5,
+            return_val: event.return_val,
         }),
         SyscallID::Exit => EventType::Exit(crate::types::ExitData {
             status: event.arg_0 as i32,
