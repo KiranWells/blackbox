@@ -1,43 +1,125 @@
-use core::slice;
+use core::num::NonZeroUsize;
 
-use aya_bpf::{helpers::bpf_probe_read_user_str_bytes, programs::RawTracePointContext};
-use aya_log_ebpf::info;
+use aya_bpf::helpers::{bpf_probe_read_user_buf, bpf_probe_read_user_str_bytes};
+use aya_bpf::maps::PerCpuArray;
+use aya_bpf::{macros::map, programs::RawTracePointContext};
+use aya_log_ebpf::debug;
 
-use crate::types::{EbpfError, SysExitCtx, SysReadArgs};
+use crate::types::EbpfError;
+use crate::{send_event, BUFFER_OUTPUT};
+use blackbox_common::{EventBuffer, EventID, GetEventId, SyscallEvent, SyscallID, BUFFER_SIZE};
+
+#[map]
+static mut DATA_BUFFER: PerCpuArray<EventBuffer> = PerCpuArray::with_max_entries(1, 0);
 
 /// Handle a read or write syscall
+///
+/// Returns a u128 as the ok value to prevent an llvm error
+/// with tuple returns. It should be treated as a () return
 pub fn sys_read_write_handler(
     ctx: &RawTracePointContext,
-    exit_args: &SysExitCtx,
-) -> Result<(), EbpfError> {
-    let is_write = exit_args.id == 1;
-    let args = SysReadArgs::try_from(exit_args)?;
-    let fd = args.fd;
+    mut event: SyscallEvent,
+) -> Result<u128, EbpfError> {
+    let is_write = event.syscall_id == 1;
 
-    let mut string_data = [0u8; 64];
-
-    let len_to_print = string_data.len().min(exit_args.ret as usize);
-    let str_read = unsafe { bpf_probe_read_user_str_bytes(args.user_buf, string_data.as_mut()) }
-        .map_err(|_| EbpfError::Read)?;
-
-    let str_read = unsafe { slice::from_raw_parts(str_read.as_ptr(), len_to_print) };
-
-    // TODO: send events to the user for this syscall
-    info!(
-        ctx,
-        "sys_{}(fd: {}, user_buf: 0x{:x}=\"{}{}\", count: {}) = {}",
-        if is_write { "write" } else { "read" },
-        fd,
-        args.user_buf as usize,
-        unsafe { core::str::from_utf8_unchecked(str_read) },
-        if exit_args.ret as usize > str_read.len() {
-            "..."
+    let length = if is_write {
+        NonZeroUsize::new(event.arg_2 as usize)
+    } else {
+        // read returns a ssize_t, which should be isize
+        let ret = event.return_val.ok_or(EbpfError::Logic)? as isize;
+        if ret < 0 {
+            // there was an error returned by the function
+            None
         } else {
-            ""
-        },
-        args.count,
-        exit_args.ret,
-    );
+            NonZeroUsize::new(ret as usize)
+        }
+    };
+    let length = length.map(|l| unsafe { NonZeroUsize::new_unchecked(BUFFER_SIZE.min(l.get())) });
 
+    event.data_size = length;
+
+    if let Some(length) = length {
+        read_bytes_and_send(
+            ctx,
+            event.arg_1 as *const u8,
+            length.get(),
+            event.get_event_id(),
+        )?;
+    }
+
+    send_event(ctx, &event)?;
+
+    Ok(0)
+}
+
+pub fn sys_open_handler(
+    ctx: &RawTracePointContext,
+    mut event: SyscallEvent,
+) -> Result<u128, EbpfError> {
+    let ptr = if event.syscall_id == SyscallID::OpenAt as u64 {
+        event.arg_1 as *const u8
+    } else {
+        event.arg_0 as *const u8
+    };
+    let length = read_string_and_send(ctx, ptr, event.get_event_id())?;
+    event.data_size = length;
+    send_event(ctx, &event)?;
+    Ok(0)
+}
+
+fn read_bytes_and_send(
+    ctx: &RawTracePointContext,
+    ptr: *const u8,
+    length: usize,
+    event_id: EventID,
+) -> Result<(), EbpfError> {
+    let data_buffer = unsafe {
+        let ptr = DATA_BUFFER.get_ptr_mut(0).ok_or(EbpfError::Map)?;
+        &mut *ptr
+    };
+    data_buffer.pid = event_id.pid;
+    data_buffer.tgid = event_id.tgid;
+    data_buffer.timestamp = event_id.timestamp;
+
+    debug!(ctx, "Sending buffer of len: {}", length);
+    let buf_ptr = data_buffer.data_buffer.as_mut_ptr();
+
+    let limited_length = length.min(BUFFER_SIZE);
+    let dest = unsafe { core::slice::from_raw_parts_mut(buf_ptr, limited_length) };
+
+    unsafe {
+        bpf_probe_read_user_buf(ptr, dest).map_err(|_| EbpfError::Read)?;
+    };
+    unsafe {
+        BUFFER_OUTPUT.output(ctx, data_buffer, 0);
+    }
     Ok(())
+}
+
+fn read_string_and_send(
+    ctx: &RawTracePointContext,
+    ptr: *const u8,
+    event_id: EventID,
+) -> Result<Option<NonZeroUsize>, EbpfError> {
+    let data_buffer = unsafe {
+        let ptr = DATA_BUFFER.get_ptr_mut(0).ok_or(EbpfError::Map)?;
+        &mut *ptr
+    };
+    data_buffer.pid = event_id.pid;
+    data_buffer.tgid = event_id.tgid;
+    data_buffer.timestamp = event_id.timestamp;
+
+    let buf_ptr = data_buffer.data_buffer.as_mut_ptr();
+
+    let dest = unsafe { core::slice::from_raw_parts_mut(buf_ptr, BUFFER_SIZE) };
+
+    let result_slice =
+        unsafe { bpf_probe_read_user_str_bytes(ptr, dest).map_err(|_| EbpfError::Read)? };
+    debug!(ctx, "Sending buffer of len: {}", result_slice.len());
+    if result_slice.is_empty() {
+        unsafe {
+            BUFFER_OUTPUT.output(ctx, data_buffer, 0);
+        }
+    }
+    Ok(NonZeroUsize::new(result_slice.len()))
 }
