@@ -75,7 +75,7 @@ pub struct ExitData {
 
 #[derive(Debug, Clone)]
 pub struct UnhandledSyscallData {
-    pub syscall_id: u64, //PRINT ONLY IDs
+    pub syscall_id: u64,
     pub arg_0: u64,
     pub arg_1: u64,
     pub arg_2: u64,
