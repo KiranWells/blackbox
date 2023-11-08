@@ -1,12 +1,13 @@
 use std::collections::HashMap;
-
 use std::ffi::OsString;
 use std::mem::size_of;
 use std::os::unix::prelude::OsStringExt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
-use aya::maps::{Array, AsyncPerfEventArray};
+use aya::maps::perf::AsyncPerfEventArrayBuffer;
+use aya::maps::{Array, AsyncPerfEventArray, MapData};
 use aya::programs::RawTracePoint;
 use aya::util::online_cpus;
 use aya::{include_bytes_aligned, Bpf};
@@ -15,351 +16,364 @@ use blackbox_common::{EventBuffer, EventID, GetEventId, SyscallEvent, SyscallID}
 use bytes::BytesMut;
 use color_eyre::eyre::Result;
 use color_eyre::Report;
-use log::{debug, info, warn};
+use futures::stream::FuturesUnordered;
+use futures::TryStreamExt;
+use log::{debug, error, info, warn};
 use nix::sys::signal::Signal;
-
-use tokio::sync::Mutex;
+use tokio::select;
+use tokio::sync::mpsc::{self, Sender};
 
 use crate::types::{
-    CloseData, Event, EventType, ForkData, OpenData, ReadData, TraceEvent, WriteData,
+    CloseData, ForkData, OpenData, ReadData, SyscallData, TraceEvent, TracepointType, WriteData,
 };
+
+#[derive(Debug)]
+pub struct SyscallBuilder {
+    enter_args: Option<SyscallEvent>,
+    data: Option<EventBuffer>,
+    exit_args: Option<SyscallEvent>,
+}
+
+impl SyscallBuilder {
+    fn event_id(event: &SyscallEvent) -> (u64, u64) {
+        let ptid = ((event.pid as u64) << 32) & (event.tgid as u64);
+        (ptid, event.syscall_id)
+    }
+    fn new() -> Self {
+        Self {
+            enter_args: None,
+            data: None,
+            exit_args: None,
+        }
+    }
+    fn is_finished(&self) -> bool {
+        if let (Some(enter), Some(exit)) = (&self.enter_args, &self.exit_args) {
+            (!enter.has_data() || self.data.is_some()) && (!exit.has_data() || self.data.is_some())
+        } else if let Some(enter) = &self.enter_args {
+            enter.syscall_id == SyscallID::Exit as u64
+                || enter.syscall_id == SyscallID::ExitGroup as u64
+        } else {
+            false
+        }
+    }
+
+    pub fn get_return(&self) -> u64 {
+        self.exit_args.as_ref().unwrap().return_val.unwrap()
+    }
+}
+
+pub async fn tracing_thread<T>(
+    tx: Sender<T>,
+    mut buf: AsyncPerfEventArrayBuffer<MapData>,
+    done: Arc<AtomicBool>,
+) -> Result<()>
+where
+    T: Clone + std::fmt::Debug + Sync + Send + 'static,
+{
+    let mut buffers = (0..16)
+        .map(|_| BytesMut::with_capacity(size_of::<SyscallEvent>()))
+        .collect::<Vec<_>>();
+
+    loop {
+        // wait for events
+        let events = buf.read_events(&mut buffers).await?;
+
+        // events.read contains the number of events that have been read,
+        // and is always <= buffers.len()
+        for buf in buffers.iter_mut().take(events.read) {
+            let payload = unsafe {
+                let ptr = buf.as_ptr() as *const T;
+                (*ptr).clone()
+            };
+
+            tx.send(payload).await?;
+        }
+        if events.lost > 0 {
+            warn!("Lost {} events!", events.lost);
+        }
+        if done.load(Ordering::Acquire) {
+            break;
+        }
+    }
+    debug!("after loop");
+    Ok(())
+}
 
 pub async fn start_tracing(pid: u32, tx: tokio::sync::mpsc::Sender<TraceEvent>) -> Result<()> {
     tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
-    let event_staging = Arc::new(Mutex::new(HashMap::<EventID, SyscallEvent>::new()));
-    let buffer_staging = Arc::new(Mutex::new(HashMap::<EventID, EventBuffer>::new()));
-    let mut bpf = init_bpf(pid)?;
+
+    let (mut bpf, detach_action) = init_bpf(pid)?;
     let mut event_output = AsyncPerfEventArray::try_from(bpf.take_map("EVENT_OUTPUT").unwrap())?;
     let mut buffer_output = AsyncPerfEventArray::try_from(bpf.take_map("BUFFER_OUTPUT").unwrap())?;
-    let mut handles = Vec::new();
+    let mut handles = FuturesUnordered::new();
+    let done = Arc::new(AtomicBool::new(false));
+    let (args_tx, mut args_rx) = mpsc::channel::<SyscallEvent>(256);
+    let (buffer_tx, mut buffer_rx) = mpsc::channel::<EventBuffer>(256);
     for cpu_id in online_cpus()? {
         debug!("Creating listener: {}/{}", cpu_id, 23);
         // open a separate perf buffer for each cpu
-        let mut buf = event_output.open(cpu_id, Some(128))?;
-        let movable_buffer_staging = buffer_staging.clone();
-        let movable_event_staging = event_staging.clone();
-        let movable_tx = tx.clone();
-        let done_outer = Arc::new(AtomicBool::new(false));
-        let done = done_outer.clone();
-        let start_time = Arc::new(Mutex::new(None));
-        let start_time_clone = start_time.clone();
+        let buf = event_output.open(cpu_id, Some(128))?;
 
+        let movable_tx = args_tx.clone();
+        let movable_done = done.clone();
         handles.push(tokio::task::spawn(async move {
-            let mut buffers = (0..16)
-                .map(|_| BytesMut::with_capacity(size_of::<SyscallEvent>()))
-                .collect::<Vec<_>>();
-
-            'outer: loop {
-                // wait for events
-                let events = buf.read_events(&mut buffers).await?;
-
-                // events.read contains the number of events that have been read,
-                // and is always <= buffers.len()
-                for buf in buffers.iter_mut().take(events.read) {
-                    let payload = unsafe {
-                        let ptr = buf.as_ptr() as *const SyscallEvent;
-                        (*ptr).clone()
-                    };
-                    {
-                        let mut st = start_time_clone.lock().await;
-
-                        if st.is_none()
-                            && payload.syscall_id == SyscallID::Execve as u64
-                            && payload.is_enter()
-                        {
-                            *st = Some(payload.timestamp)
-                        }
-                    }
-
-                    if payload.has_data() {
-                        // get the associated data
-                        let associated_buffer = {
-                            // debug!("locking buffer");
-                            let mut map = movable_buffer_staging.lock().await;
-                            map.remove(&payload.get_event_id())
-                        };
-                        // debug!("unlocked buffer");
-
-                        match associated_buffer {
-                            Some(expr) => {
-                                if send_event(
-                                    payload,
-                                    Some(expr),
-                                    &movable_tx,
-                                    start_time_clone.clone(),
-                                )
-                                .await?
-                                {
-                                    done.swap(true, Ordering::Release);
-                                    break 'outer;
-                                }
-                            }
-                            None => {
-                                // if there is no data, we need to wait for it. We'll save this for
-                                // later
-                                // debug!("locking event");
-                                {
-                                    let mut map = movable_event_staging.lock().await;
-                                    map.insert(payload.get_event_id(), payload);
-                                }
-                                // debug!("unlocked event");
-                            }
-                        }
-                    } else {
-                        // If there is no associated_buffer, we don't need to wait for it
-                        if send_event(payload, None, &movable_tx, start_time_clone.clone()).await? {
-                            done.swap(true, Ordering::Release);
-                            break 'outer;
-                        }
-                    }
-                }
-                if done.load(Ordering::Acquire) {
-                    break;
-                }
-            }
-            debug!("after loop: events");
-
-            // This is necessary to tell the compiler what type this block returns
-            Ok::<(), Report>(())
+            tracing_thread(movable_tx, buf, movable_done).await
         }));
+        let buf = buffer_output.open(cpu_id, Some(128))?;
 
-        let mut buf = buffer_output.open(cpu_id, Some(128))?;
-        let movable_buffer_staging = buffer_staging.clone();
-        let movable_event_staging = event_staging.clone();
-        let movable_tx = tx.clone();
-        let done = done_outer.clone();
-        let start_time_clone = start_time.clone();
+        let movable_tx = buffer_tx.clone();
+        let movable_done = done.clone();
         handles.push(tokio::task::spawn(async move {
-            let mut buffers = (0..16)
-                .map(|_| BytesMut::with_capacity(size_of::<EventBuffer>()))
-                .collect::<Vec<_>>();
-
-            'outer: loop {
-                // wait for events
-                let events = buf.read_events(&mut buffers).await?;
-
-                for buf in buffers.iter_mut().take(events.read) {
-                    let payload = unsafe {
-                        let ptr = buf.as_ptr() as *const EventBuffer;
-                        (*ptr).clone()
-                    };
-
-                    // get the associated event
-                    let associated_buffer = {
-                        // debug!("locking event");
-                        let mut map = movable_event_staging.lock().await;
-                        map.remove(&payload.get_event_id())
-                    };
-                    // debug!("unlocked event");
-
-                    match associated_buffer {
-                        Some(expr) => {
-                            if send_event(
-                                expr,
-                                Some(payload),
-                                &movable_tx,
-                                start_time_clone.clone(),
-                            )
-                            .await?
-                            {
-                                done.swap(true, Ordering::Release);
-                                break 'outer;
-                            }
-                        }
-                        None => {
-                            // if there is no event, we need to wait for it. We'll save this for
-                            // later
-                            // debug!("locking buffer");
-                            {
-                                let mut map = movable_buffer_staging.lock().await;
-                                map.insert(payload.get_event_id(), payload);
-                            }
-                            // debug!("unlocked buffer");
-                        }
-                    }
-                }
-                if done.load(Ordering::Acquire) {
-                    break;
-                }
-            }
-            debug!("after loop: buffers");
-
-            // This is necessary to tell the compiler what type this block returns
-            Ok::<(), Report>(())
+            tracing_thread(movable_tx, buf, movable_done).await
         }));
     }
-    // ready.wait();
-    info!("before wait");
+    handles.push(tokio::task::spawn(async move {
+        let mut events = vec![];
+        let mut buffers = HashMap::<EventID, EventBuffer>::new();
+        let mut start_time = None;
+        loop {
+            select! {
+                Some(args) = args_rx.recv() => {
+                    if args.syscall_id == SyscallID::Execve as u64 && start_time.is_none() {
+                        start_time = Some(args.timestamp);
+                    }
+                    if args.syscall_id == SyscallID::Exit as u64 || args.syscall_id == SyscallID::ExitGroup as u64 {
+                        break;
+                    }
+                    events.push(args);
+                }
+                Some(buffer) = buffer_rx.recv() => {
+                    buffers.insert(buffer.get_event_id(), buffer);
+                }
+                else => break
+            };
+        }
+        let mut map = HashMap::<(u64, u64), SyscallBuilder>::new();
+        events.sort_by(|a,b| a.timestamp.cmp(&b.timestamp));
+        for event in events {
+            let id = SyscallBuilder::event_id(&event);
+            let is_finished = {
+                let builder = map.entry(id).or_insert(SyscallBuilder::new());
+                if event.has_data() {
+                    let buffer = buffers.remove(&event.get_event_id());
+                    builder.data = buffer;
+                }
+                if event.is_enter() {
+                    builder.enter_args = Some(event);
+                } else {
+                    builder.exit_args = Some(event);
+                }
+                builder.is_finished()
+            };
+
+            if is_finished {
+                let builder = map.remove(&id).unwrap();
+
+                if send_event(builder, &tx, start_time).await? {
+                    done.store(true, Ordering::Release);
+                }
+            }
+        }
+        info!("Done with collection thread");
+
+        Ok::<(), Report>(())
+    }));
+
+    // wait for tracing to initialize
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    // start the traced process
     unsafe { nix::libc::kill(pid as i32, Signal::SIGCONT as i32) };
-    info!("after wait");
+
+    tokio::spawn(async move {
+        tokio::signal::ctrl_c().await.unwrap();
+        unsafe { nix::libc::kill(pid as i32, Signal::SIGINT as i32) };
+    });
+    if let Some(result) = handles.try_next().await? {
+        info!("detaching!");
+        detach_action(&mut bpf)?;
+        result?;
+    }
 
     // TODO: handle the fact that these will never rejoin if stuck awaiting events
-    for handle in handles {
-        handle.await??;
-    }
+    // while let Some(result) = handles.try_next().await? {
+    //     info!("thread exited!");
+    //     result?
+    // }
 
     Ok(())
 }
 
 async fn send_event(
-    event: SyscallEvent,
-    buffer: Option<EventBuffer>,
+    syscall: SyscallBuilder,
     tx: &tokio::sync::mpsc::Sender<TraceEvent>,
-    start_time: Arc<Mutex<Option<u64>>>,
+    start_time: Option<u64>,
 ) -> Result<bool> {
+    let entry = &syscall.enter_args.as_ref().unwrap();
+    let exit = &syscall.exit_args.as_ref();
     {
-        let st = start_time.lock().await;
-        if let Some(timestamp) = *st {
-            if event.timestamp < timestamp {
+        if let Some(timestamp) = start_time {
+            if entry.timestamp < timestamp {
                 return Ok(false);
             }
         } else {
-            // TODO: sometimes this doesn't work properly??
             debug!("timestamp is none!");
             return Ok(false);
         }
     }
-    let mut data = None;
-    if let Some(buffer) = buffer {
-        assert!(event.has_data(), "Recieved data for an event with no data!");
-        let len = event.data_size.unwrap();
-        data = Some(buffer.data_buffer[..len.get()].to_owned());
+
+    if let Some(exit) = exit {
+        if entry.timestamp > exit.timestamp {
+            error!("Received incorrect event: enter after exit! ");
+            return Ok(false);
+        }
     }
-    let event_data = match event.syscall_id.into() {
-        SyscallID::Read => EventType::Read(ReadData {
-            file_descriptor: event.arg_0 as i32,
-            count: event.arg_2 as usize,
+
+    let mut data = None;
+    if let Some(buffer) = &syscall.data {
+        if !entry.has_data() && !exit.unwrap().has_data() {
+            error!("Recieved data for an event with no data! {:?}", syscall);
+        } else {
+            let len = if entry.has_data() {
+                entry.data_size.unwrap()
+            } else {
+                exit.unwrap().data_size.unwrap()
+            };
+            data = Some(buffer.data_buffer[..len.get()].to_owned());
+        }
+    }
+
+    let event_data = match entry.syscall_id.into() {
+        SyscallID::Read => SyscallData::Read(ReadData {
+            file_descriptor: entry.arg_0 as i32,
+            count: entry.arg_2 as usize,
             data_read: data,
-            bytes_read: event.return_val.map(|r| {
-                if (r as isize) < 0 {
-                    Err(r as isize)
-                } else {
-                    Ok(r as usize)
-                }
-            }),
+            bytes_read: match syscall.get_return() {
+                r if r as isize > 0 => Ok(r as usize),
+                r => Err(r as isize),
+            },
         }),
-        SyscallID::Write => EventType::Write(WriteData {
-            file_descriptor: event.arg_0 as i32,
-            count: event.arg_2 as usize,
+        SyscallID::Write => SyscallData::Write(WriteData {
+            file_descriptor: entry.arg_0 as i32,
+            count: entry.arg_2 as usize,
             data_written: data,
-            bytes_written: event.return_val.map(|r| {
-                if (r as isize) < 0 {
-                    Err(r as isize)
-                } else {
-                    Ok(r as usize)
-                }
-            }),
+            bytes_written: match syscall.get_return() {
+                r if r as isize > 0 => Ok(r as usize),
+                r => Err(r as isize),
+            },
         }),
-        SyscallID::Open => EventType::Open(OpenData {
+        SyscallID::Open => SyscallData::Open(OpenData {
             filename: data.map(OsString::from_vec),
-            flags: event.arg_1 as i32,
-            file_descriptor: event.return_val.map(|r| {
-                if (r as i32) < 0 {
-                    Err(r as i32)
-                } else {
-                    Ok(r as u32)
-                }
-            }),
+            flags: entry.arg_1 as i32,
+            file_descriptor: match syscall.get_return() {
+                r if r as i32 > 0 => Ok(r as i32),
+                r => Err(r as i32),
+            },
+            directory_fd: None,
+            mode: entry.arg_2 as u32,
         }),
-        SyscallID::OpenAt => EventType::Open(OpenData {
+        SyscallID::OpenAt => SyscallData::Open(OpenData {
             filename: data.map(OsString::from_vec),
-            flags: event.arg_2 as i32,
-            file_descriptor: event.return_val.map(|r| {
-                if (r as i32) < 0 {
-                    Err(r as i32)
-                } else {
-                    Ok(r as u32)
-                }
-            }),
+            flags: entry.arg_2 as i32,
+            file_descriptor: match syscall.get_return() {
+                r if r as i32 > 0 => Ok(r as i32),
+                r => Err(r as i32),
+            },
+            directory_fd: Some(entry.arg_0 as i32),
+            mode: entry.arg_3 as u32,
         }),
-        SyscallID::Close => EventType::Close(CloseData {
-            file_descriptor: event.arg_0 as i32,
-            return_val: event.return_val.map(|r| {
-                if (r as i32) < 0 {
-                    Err(r as i32)
-                } else {
-                    Ok(())
-                }
-            }),
+        SyscallID::Creat => SyscallData::Open(OpenData {
+            filename: data.map(OsString::from_vec),
+            // according to man open(2): A call to creat() is equivalent to calling open()
+            // with flags equal to O_CREAT|O_WRONLY|O_TRUNC.
+            flags: nix::libc::O_CREAT | nix::libc::O_WRONLY | nix::libc::O_TRUNC,
+            file_descriptor: match syscall.get_return() {
+                r if r as i32 > 0 => Ok(r as i32),
+                r => Err(r as i32),
+            },
+            directory_fd: None,
+            mode: entry.arg_1 as u32,
         }),
-        SyscallID::Socket => EventType::Socket(crate::types::SocketData {
-            domain: event.arg_0 as i32,
-            r#type: event.arg_1 as i32,
-            protocol: event.arg_2 as i32,
-            file_descriptor: event.return_val.map(|r| {
-                if (r as i32) < 0 {
-                    Err(r as i32)
-                } else {
-                    Ok(r as u32)
-                }
-            }),
+        SyscallID::Close => SyscallData::Close(CloseData {
+            file_descriptor: entry.arg_0 as i32,
+            return_val: match syscall.get_return() {
+                r if r as i32 > 0 => Ok(()),
+                r => Err(r as i32),
+            },
         }),
-        SyscallID::Shutdown => EventType::Shutdown(crate::types::ShutdownData {
-            file_descriptor: event.arg_0 as i32,
-            how: event.arg_1 as i32,
-            return_val: event.return_val.map(|r| {
-                if (r as i32) < 0 {
-                    Err(r as i32)
-                } else {
-                    Ok(())
-                }
-            }),
+        SyscallID::Socket => SyscallData::Socket(crate::types::SocketData {
+            domain: entry.arg_0 as i32,
+            r#type: entry.arg_1 as i32,
+            protocol: entry.arg_2 as i32,
+            file_descriptor: match syscall.get_return() {
+                r if r as i32 > 0 => Ok(r as i32),
+                r => Err(r as i32),
+            },
         }),
-        SyscallID::Fork => EventType::Fork(ForkData {
-            pid: event.return_val.map(|r| {
-                if (r as i32) < 0 {
-                    Err(r as i32)
-                } else {
-                    Ok(r as u32)
-                }
-            }),
+        SyscallID::Shutdown => SyscallData::Shutdown(crate::types::ShutdownData {
+            file_descriptor: entry.arg_0 as i32,
+            how: entry.arg_1 as i32,
+            return_val: match syscall.get_return() {
+                r if r as i32 > 0 => Ok(()),
+                r => Err(r as i32),
+            },
         }),
-        SyscallID::Execve => EventType::Unhandled(crate::types::UnhandledSyscallData {
-            syscall_id: event.syscall_id,
-            arg_0: event.arg_0,
-            arg_1: event.arg_1,
-            arg_2: event.arg_2,
-            arg_3: event.arg_3,
-            arg_4: event.arg_4,
-            arg_5: event.arg_5,
-            return_val: event.return_val,
+        SyscallID::Fork => SyscallData::Fork(ForkData {
+            pid: match syscall.get_return() {
+                r if r as i32 > 0 => Ok(r as u32),
+                r => Err(r as i32),
+            },
         }),
-        SyscallID::Exit => EventType::Exit(crate::types::ExitData {
-            status: event.arg_0 as i32,
+        SyscallID::Execve => SyscallData::Unhandled(crate::types::UnhandledSyscallData {
+            syscall_id: entry.syscall_id,
+            arg_0: entry.arg_0,
+            arg_1: entry.arg_1,
+            arg_2: entry.arg_2,
+            arg_3: entry.arg_3,
+            arg_4: entry.arg_4,
+            arg_5: entry.arg_5,
+            return_val: syscall.get_return(),
         }),
-        SyscallID::ExitGroup => EventType::Exit(crate::types::ExitData {
-            status: event.arg_0 as i32,
+        SyscallID::Exit => SyscallData::Exit(crate::types::ExitData {
+            status: entry.arg_0 as i32,
         }),
-        SyscallID::Unhandled => EventType::Unhandled(crate::types::UnhandledSyscallData {
-            syscall_id: event.syscall_id,
-            arg_0: event.arg_0,
-            arg_1: event.arg_1,
-            arg_2: event.arg_2,
-            arg_3: event.arg_3,
-            arg_4: event.arg_4,
-            arg_5: event.arg_5,
-            return_val: event.return_val,
+        SyscallID::ExitGroup => SyscallData::Exit(crate::types::ExitData {
+            status: entry.arg_0 as i32,
+        }),
+        SyscallID::Unhandled => SyscallData::Unhandled(crate::types::UnhandledSyscallData {
+            syscall_id: entry.syscall_id,
+            arg_0: entry.arg_0,
+            arg_1: entry.arg_1,
+            arg_2: entry.arg_2,
+            arg_3: entry.arg_3,
+            arg_4: entry.arg_4,
+            arg_5: entry.arg_5,
+            return_val: syscall.get_return(),
         }),
     };
-    let is_process_exit = matches!(event_data, EventType::Exit(_));
+    let is_process_exit = matches!(event_data, SyscallData::Exit(_));
 
     let event_to_send = TraceEvent {
-        pid: event.tgid,
-        thread_id: event.pid,
-        event: if event.is_enter() {
-            Event::Enter
+        pid: entry.tgid,
+        thread_id: entry.pid,
+        tracepoint: if entry.is_enter() {
+            TracepointType::Enter
         } else {
-            Event::Exit
+            TracepointType::Exit
         },
-        monotonic_timestamp: event.timestamp,
-        event_type: event_data,
+        monotonic_enter_timestamp: entry.timestamp,
+        // if there is no exit event (e.g. with non-returning functions)
+        // then we consider the exection to take no time
+        monotonic_exit_timestamp: exit.map(|e| e.timestamp).unwrap_or(entry.timestamp),
+        data: event_data,
     };
 
     tx.send(event_to_send).await?;
     Ok(is_process_exit)
 }
 
-fn init_bpf(pid: u32) -> Result<Bpf> {
+type DetachAction = Box<dyn FnOnce(&mut Bpf) -> Result<()> + Send>;
+
+fn init_bpf(pid: u32) -> Result<(Bpf, DetachAction)> {
     #[cfg(debug_assertions)]
     let mut bpf = Bpf::load(include_bytes_aligned!(
         "../../../target/bpfel-unknown-none/debug/blackbox"
@@ -378,10 +392,10 @@ fn init_bpf(pid: u32) -> Result<Bpf> {
     // set up the sys_enter and sys_exit tracepoints
     let program: &mut RawTracePoint = bpf.program_mut("handle_sys_enter").unwrap().try_into()?;
     program.load()?;
-    program.attach("sys_enter")?;
+    let enter_handle = program.attach("sys_enter")?;
     let program: &mut RawTracePoint = bpf.program_mut("handle_sys_exit").unwrap().try_into()?;
     program.load()?;
-    program.attach("sys_exit")?;
+    let exit_handle = program.attach("sys_exit")?;
 
     // populate PID filter buffer
     let mut traced_pids: aya::maps::array::Array<_, u32> =
@@ -391,5 +405,14 @@ fn init_bpf(pid: u32) -> Result<Bpf> {
 
     info!("Tracing PID {}", pid);
 
-    Ok(bpf)
+    let use_handles = move |bpf: &mut Bpf| -> Result<()> {
+        let program: &mut RawTracePoint =
+            bpf.program_mut("handle_sys_enter").unwrap().try_into()?;
+        program.detach(enter_handle)?;
+        let program: &mut RawTracePoint = bpf.program_mut("handle_sys_exit").unwrap().try_into()?;
+        program.detach(exit_handle)?;
+        Ok(())
+    };
+
+    Ok((bpf, Box::new(use_handles)))
 }

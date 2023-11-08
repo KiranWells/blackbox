@@ -7,7 +7,9 @@ use crate::types::{
     UnhandledSyscallData, WriteData,
 };
 
-use crate::types::EventType::{Close, Exit, Fork, Open, Read, Shutdown, Socket, Unhandled, Write};
+use crate::types::SyscallData::{
+    Close, Exit, Fork, Open, Read, Shutdown, Socket, Unhandled, Write,
+};
 
 #[derive(Debug)]
 struct FileAccess {
@@ -25,12 +27,12 @@ pub async fn start_processing(mut rx: tokio::sync::mpsc::Receiver<TraceEvent>) -
     // collect trace events into hashmap
     let mut file_hash: HashMap<i32, Vec<TraceEvent>> = HashMap::new(); //Map each event to their File_Descriptor (Same File)
     while let Some(i) = rx.recv().await {
-        match i.clone().event_type {
+        match i.clone().data {
             Open(OpenData {
                 file_descriptor, ..
             }) => {
-                if let Some(Ok(fd)) = file_descriptor {
-                    let list = file_hash.entry(fd as i32).or_insert(vec![]);
+                if let Ok(fd) = file_descriptor {
+                    let list = file_hash.entry(fd).or_insert(vec![]);
                     list.push(i);
                 }
             }
@@ -55,8 +57,8 @@ pub async fn start_processing(mut rx: tokio::sync::mpsc::Receiver<TraceEvent>) -
             Socket(SocketData {
                 file_descriptor, ..
             }) => {
-                if let Some(Ok(fd)) = file_descriptor {
-                    let list = file_hash.entry(fd as i32).or_insert(vec![]);
+                if let Ok(fd) = file_descriptor {
+                    let list = file_hash.entry(fd).or_insert(vec![]);
                     list.push(i);
                 }
             }
@@ -80,8 +82,8 @@ pub async fn start_processing(mut rx: tokio::sync::mpsc::Receiver<TraceEvent>) -
     }
     for (_, mut value) in file_hash {
         //begin processing all events
-        // sort value by monotonic_time
-        value.sort_by(|a, b| a.monotonic_timestamp.cmp(&b.monotonic_timestamp));
+        // sort value by monotonic time
+        value.sort_by(|a, b| a.monotonic_exit_timestamp.cmp(&b.monotonic_exit_timestamp));
 
         let mut fa = FileAccess {
             file_name: OsString::new(),
@@ -96,21 +98,24 @@ pub async fn start_processing(mut rx: tokio::sync::mpsc::Receiver<TraceEvent>) -
         };
         // group by open -> close event pairs
         for event in value {
-            match event.clone().event_type {
+            match event.clone().data {
                 Open(OpenData {
                     filename,
                     file_descriptor,
                     ..
                 }) => {
-                    if let Some(Ok(fd)) = file_descriptor {
-                        fa.file_descriptor = fd as i32;
-                    } else if let Some(Err(_)) = file_descriptor {
-                        fa.error_count += 1;
+                    match file_descriptor {
+                        Ok(fd) => {
+                            fa.file_descriptor = fd;
+                        }
+                        Err(_) => {
+                            fa.error_count += 1;
+                        }
                     }
                     if let Some(fname) = filename {
                         fa.file_name = fname;
                     }
-                    fa.start_time = event.clone().monotonic_timestamp;
+                    fa.start_time = event.clone().monotonic_enter_timestamp;
                 }
                 Read(ReadData {
                     data_read,
@@ -120,10 +125,13 @@ pub async fn start_processing(mut rx: tokio::sync::mpsc::Receiver<TraceEvent>) -
                     if let Some(mut dr) = data_read {
                         fa.read_data.append(&mut dr);
                     }
-                    if let Some(Ok(br)) = bytes_read {
-                        fa.data_length += br;
-                    } else if let Some(Err(_)) = bytes_read {
-                        fa.error_count += 1;
+                    match bytes_read {
+                        Ok(br) => {
+                            fa.data_length += br;
+                        }
+                        Err(_) => {
+                            fa.error_count += 1;
+                        }
                     }
                 }
                 Write(WriteData {
@@ -134,21 +142,25 @@ pub async fn start_processing(mut rx: tokio::sync::mpsc::Receiver<TraceEvent>) -
                     if let Some(mut dw) = data_written {
                         fa.write_data.append(&mut dw);
                     }
-                    if let Some(Ok(bw)) = bytes_written {
-                        fa.data_length += bw;
-                    } else if let Some(Err(_)) = bytes_written {
-                        fa.error_count += 1;
+                    match bytes_written {
+                        Ok(bw) => {
+                            fa.data_length += bw;
+                        }
+                        Err(_) => {
+                            fa.error_count += 1;
+                        }
                     }
                 }
                 Socket(SocketData {
                     file_descriptor, ..
-                }) => {
-                    if let Some(Ok(fd)) = file_descriptor {
-                        fa.file_descriptor = fd as i32;
-                    } else if let Some(Err(_)) = file_descriptor {
+                }) => match file_descriptor {
+                    Ok(fd) => {
+                        fa.file_descriptor = fd;
+                    }
+                    Err(_) => {
                         fa.error_count += 1;
                     }
-                }
+                },
                 Fork(_) => {}
                 Exit(_) => {}
                 Unhandled(UnhandledSyscallData { syscall_id, .. }) => {
@@ -156,43 +168,40 @@ pub async fn start_processing(mut rx: tokio::sync::mpsc::Receiver<TraceEvent>) -
                 }
                 Shutdown(_) => {}
                 Close(CloseData {
-                    file_descriptor,
-                    return_val,
+                    file_descriptor, ..
                 }) => {
                     fa.file_descriptor = file_descriptor;
-                    fa.end_time = event.clone().monotonic_timestamp - fa.start_time;
-                    if let Some(_r_val) = return_val {
-                        // finalize fileaccess
-                        // send to UI (in the future)
-                        println!("File Access Complete");
-                        if fa.file_name.is_empty() {
-                            fa.file_name = OsString::from("Unknown");
-                        }
-                        println!("  File Name: {:?}", fa.file_name);
-                        println!("  File Descriptor: {:?}", fa.file_descriptor);
-                        if !fa.read_data.is_empty() {
-                            println!("  Data Read: {:?}", fa.read_data);
-                        }
-                        if !fa.write_data.is_empty() {
-                            println!("  Data Written: {:?}", fa.write_data);
-                        }
-                        println!("  Total Data Length: {:?}", fa.data_length);
-                        println!("  Time Range: {:?} ns", fa.end_time);
-                        println!("  Number of Errors when accessing: {:?}", fa.error_count);
-                        if !fa.write_data.is_empty() {
-                            println!("  Unhandled Process IDs: {:?}", fa.unhandled_ids);
-                        }
-                        // clear fa data
-                        fa.data_length = 0;
-                        fa.file_descriptor = -1;
-                        fa.start_time = 0;
-                        fa.end_time = 0;
-                        fa.error_count = 0;
-                        fa.file_name.clear();
-                        fa.read_data.clear();
-                        fa.write_data.clear();
-                        fa.unhandled_ids.clear();
+                    fa.end_time = event.clone().monotonic_exit_timestamp - fa.start_time;
+                    // finalize fileaccess
+                    // send to UI (in the future)
+                    println!("File Access Complete");
+                    if fa.file_name.is_empty() {
+                        fa.file_name = OsString::from("Unknown");
                     }
+                    println!("  File Name: {:?}", fa.file_name);
+                    println!("  File Descriptor: {:?}", fa.file_descriptor);
+                    if !fa.read_data.is_empty() {
+                        println!("  Data Read: {:?}", fa.read_data);
+                    }
+                    if !fa.write_data.is_empty() {
+                        println!("  Data Written: {:?}", fa.write_data);
+                    }
+                    println!("  Total Data Length: {:?}", fa.data_length);
+                    println!("  Time Range: {:?} ns", fa.end_time);
+                    println!("  Number of Errors when accessing: {:?}", fa.error_count);
+                    if !fa.write_data.is_empty() {
+                        println!("  Unhandled Process IDs: {:?}", fa.unhandled_ids);
+                    }
+                    // clear fa data
+                    fa.data_length = 0;
+                    fa.file_descriptor = -1;
+                    fa.start_time = 0;
+                    fa.end_time = 0;
+                    fa.error_count = 0;
+                    fa.file_name.clear();
+                    fa.read_data.clear();
+                    fa.write_data.clear();
+                    fa.unhandled_ids.clear();
                 }
             }
         }

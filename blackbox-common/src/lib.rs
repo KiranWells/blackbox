@@ -51,6 +51,8 @@ pub struct EventBuffer {
     pub tgid: u32,
     /// the process id (user-space thread id)
     pub pid: u32,
+    /// The value from rax
+    pub syscall_id: u64,
     /// a constant-size buffer for data to be read from
     pub data_buffer: [u8; BUFFER_SIZE],
 }
@@ -111,6 +113,7 @@ pub enum SyscallID {
     Write = 1,
     Open = 2,
     OpenAt = 257,
+    Creat = 85,
     Close = 3,
     Socket = 41,
     Shutdown = 48,
@@ -134,6 +137,7 @@ where
             1 => Self::Write,
             2 => Self::Open,
             257 => Self::OpenAt,
+            85 => Self::Creat,
             3 => Self::Close,
             41 => Self::Socket,
             48 => Self::Shutdown,

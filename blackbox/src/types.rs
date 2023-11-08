@@ -1,14 +1,18 @@
 use std::ffi::OsString;
 
-// TODO: add dirfd and mode if needed
 #[derive(Debug, Clone)]
 pub struct OpenData {
-    // This may be different binary layout from the String type
+    /// The file name passed to open. This is Some unless there are errors reading the memory
+    // This is an OsString because it may be different binary layout from the String type
     pub filename: Option<OsString>,
     /// The flags for the open call. See man open(2) for details
     pub flags: i32,
     /// A file descriptor or the error return value
-    pub file_descriptor: Option<Result<u32, i32>>,
+    pub file_descriptor: Result<i32, i32>,
+    /// the directory file_descriptor passed to openat. None if the system call was not openat.
+    pub directory_fd: Option<i32>,
+    /// The permissions mode the file is opened in (e.x. 0644)
+    pub mode: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -16,11 +20,11 @@ pub struct ReadData {
     pub file_descriptor: i32,
     /// The number of bytes the user requested to be read
     pub count: usize,
-    /// None in the enter event. If None in exit, data could not be read
+    /// The data read from the file descriptor. None indicates an error reading the memory
     pub data_read: Option<Vec<u8>>,
     /// The number of bytes read, or the error value.
     /// Zero indicates EOF
-    pub bytes_read: Option<Result<usize, isize>>,
+    pub bytes_read: Result<usize, isize>,
 }
 
 #[derive(Debug, Clone)]
@@ -28,17 +32,17 @@ pub struct WriteData {
     pub file_descriptor: i32,
     /// The number of bytes the user requested to be written
     pub count: usize,
-    /// None in the exit event to save data transfer. If None in enter, data could not be read
+    /// The data written to the file descriptor. None indicates an error reading the memory
     pub data_written: Option<Vec<u8>>,
     /// The number of bytes written, or the error value.
-    pub bytes_written: Option<Result<usize, isize>>,
+    pub bytes_written: Result<usize, isize>,
 }
 
 #[derive(Debug, Clone)]
 pub struct CloseData {
     pub file_descriptor: i32,
     /// Success or the returned error
-    pub return_val: Option<Result<(), i32>>,
+    pub return_val: Result<(), i32>,
 }
 
 #[derive(Debug, Clone)]
@@ -49,7 +53,7 @@ pub struct SocketData {
     pub r#type: i32,
     pub protocol: i32,
     /// A file descriptor or the error return value
-    pub file_descriptor: Option<Result<u32, i32>>,
+    pub file_descriptor: Result<i32, i32>,
 }
 
 #[derive(Debug, Clone)]
@@ -58,13 +62,13 @@ pub struct ShutdownData {
     /// See shutdown(2) for possible values
     pub how: i32,
     /// Success or the returned error
-    pub return_val: Option<Result<(), i32>>,
+    pub return_val: Result<(), i32>,
 }
 
 #[derive(Debug, Clone)]
 pub struct ForkData {
     /// 0 for the child thread, the child PID for the parent, or the error returned
-    pub pid: Option<Result<u32, i32>>,
+    pub pid: Result<u32, i32>,
 }
 
 #[derive(Debug, Clone)]
@@ -83,12 +87,11 @@ pub struct UnhandledSyscallData {
     pub arg_3: u64,
     pub arg_4: u64,
     pub arg_5: u64,
-    /// None on sys_enter
-    pub return_val: Option<u64>,
+    pub return_val: u64,
 }
 
 #[derive(Debug, Clone)]
-pub enum EventType {
+pub enum SyscallData {
     Open(OpenData),
     Read(ReadData),
     Write(WriteData),
@@ -101,7 +104,7 @@ pub enum EventType {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub enum Event {
+pub enum TracepointType {
     Enter,
     Exit,
 }
@@ -113,8 +116,12 @@ pub struct TraceEvent {
     /// The thread ID, also the process ID in kernel space
     pub thread_id: u32,
     /// Whether the event is an enter or exit
-    pub event: Event,
-    /// the value returned by bpf_ktime_get_ns: nanoseconds running since boot
-    pub monotonic_timestamp: u64,
-    pub event_type: EventType,
+    pub tracepoint: TracepointType,
+    /// the value returned by bpf_ktime_get_ns: nanoseconds running since boot for the sys_enter
+    /// event
+    pub monotonic_enter_timestamp: u64,
+    /// the value returned by bpf_ktime_get_ns: nanoseconds running since boot for the sys_exit
+    /// event
+    pub monotonic_exit_timestamp: u64,
+    pub data: SyscallData,
 }

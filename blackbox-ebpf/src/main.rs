@@ -4,7 +4,6 @@
 mod handlers;
 mod types;
 
-use aya_log_ebpf::debug;
 use blackbox_common::{EventBuffer, SyscallEvent, SyscallID};
 use handlers::sys_read_write_handler;
 use types::{EbpfError, SysExitCtx};
@@ -40,16 +39,6 @@ fn try_handle_sys_enter(ctx: &RawTracePointContext) -> Result<(), EbpfError> {
     let pid_tgid = bpf_get_current_pid_tgid();
     // this is more like the PID in user-space
     let tgid = (pid_tgid >> 32) as u32;
-    // let typed_ctx = SysEnterCtx::try_from(ctx)?;
-    // if typed_ctx.id == 1 {
-    //     debug!(
-    //         ctx,
-    //         "Received enter event {} with pid: {} and thread id: {}",
-    //         typed_ctx.id,
-    //         tgid,
-    //         pid_tgid & 0xFFFF_FFFF
-    //     );
-    // }
 
     // TODO: handle multiple PIDS
     let traced_pid = *unsafe { PIDS.get(0) }.ok_or(EbpfError::Map)?;
@@ -60,13 +49,13 @@ fn try_handle_sys_enter(ctx: &RawTracePointContext) -> Result<(), EbpfError> {
 
     let typed_ctx = SysEnterCtx::try_from(ctx)?;
     let syscall_event = SyscallEvent::try_from(&typed_ctx)?;
-    debug!(ctx, "Received enter event with id: {}", typed_ctx.id);
 
     match typed_ctx.id.into() {
         SyscallID::Read => send_event(ctx, &syscall_event),
         SyscallID::Write => sys_read_write_handler(ctx, syscall_event).map(|_| ()),
         SyscallID::Open => sys_open_handler(ctx, syscall_event).map(|_| ()),
         SyscallID::OpenAt => sys_open_handler(ctx, syscall_event).map(|_| ()),
+        SyscallID::Creat => sys_open_handler(ctx, syscall_event).map(|_| ()),
         SyscallID::Close => send_event(ctx, &syscall_event),
         SyscallID::Socket => send_event(ctx, &syscall_event),
         SyscallID::Shutdown => send_event(ctx, &syscall_event),
@@ -103,13 +92,13 @@ fn try_handle_sys_exit(ctx: &RawTracePointContext) -> Result<(), EbpfError> {
     }
     let typed_ctx = SysExitCtx::try_from(ctx)?;
     let syscall_event = SyscallEvent::try_from(&typed_ctx)?;
-    debug!(ctx, "Received exit event with id: {}", typed_ctx.id);
 
     match typed_ctx.id.into() {
         SyscallID::Read => sys_read_write_handler(ctx, syscall_event).map(|_| ()),
         SyscallID::Write => send_event(ctx, &syscall_event),
         SyscallID::Open => send_event(ctx, &syscall_event),
         SyscallID::OpenAt => send_event(ctx, &syscall_event),
+        SyscallID::Creat => send_event(ctx, &syscall_event),
         SyscallID::Close => send_event(ctx, &syscall_event),
         SyscallID::Socket => send_event(ctx, &syscall_event),
         SyscallID::Shutdown => send_event(ctx, &syscall_event),
