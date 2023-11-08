@@ -15,7 +15,7 @@ use aya_bpf::{
     programs::RawTracePointContext,
 };
 
-use crate::{handlers::sys_open_handler, types::SysEnterCtx};
+use crate::{handlers::filename_handler, types::SysEnterCtx};
 
 #[map]
 static mut PIDS: Array<u32> = Array::with_max_entries(128, 0);
@@ -53,14 +53,15 @@ fn try_handle_sys_enter(ctx: &RawTracePointContext) -> Result<(), EbpfError> {
     match typed_ctx.id.into() {
         SyscallID::Read => send_event(ctx, &syscall_event),
         SyscallID::Write => sys_read_write_handler(ctx, syscall_event).map(|_| ()),
-        SyscallID::Open => sys_open_handler(ctx, syscall_event).map(|_| ()),
-        SyscallID::OpenAt => sys_open_handler(ctx, syscall_event).map(|_| ()),
-        SyscallID::Creat => sys_open_handler(ctx, syscall_event).map(|_| ()),
+        SyscallID::Open => filename_handler(ctx, syscall_event).map(|_| ()),
+        SyscallID::OpenAt => filename_handler(ctx, syscall_event).map(|_| ()),
+        SyscallID::Creat => filename_handler(ctx, syscall_event).map(|_| ()),
         SyscallID::Close => send_event(ctx, &syscall_event),
         SyscallID::Socket => send_event(ctx, &syscall_event),
         SyscallID::Shutdown => send_event(ctx, &syscall_event),
         SyscallID::Fork => send_event(ctx, &syscall_event),
-        SyscallID::Execve => send_event(ctx, &syscall_event),
+        SyscallID::Execve => filename_handler(ctx, syscall_event).map(|_| ()),
+        SyscallID::ExecveAt => filename_handler(ctx, syscall_event).map(|_| ()),
         SyscallID::Exit => send_event(ctx, &syscall_event),
         SyscallID::ExitGroup => send_event(ctx, &syscall_event),
         SyscallID::Unhandled => send_event(ctx, &syscall_event),
@@ -104,6 +105,7 @@ fn try_handle_sys_exit(ctx: &RawTracePointContext) -> Result<(), EbpfError> {
         SyscallID::Shutdown => send_event(ctx, &syscall_event),
         SyscallID::Fork => send_event(ctx, &syscall_event),
         SyscallID::Execve => send_event(ctx, &syscall_event),
+        SyscallID::ExecveAt => send_event(ctx, &syscall_event),
         SyscallID::Exit => send_event(ctx, &syscall_event),
         SyscallID::ExitGroup => send_event(ctx, &syscall_event),
         SyscallID::Unhandled => send_event(ctx, &syscall_event),

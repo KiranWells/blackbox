@@ -56,14 +56,14 @@ pub fn sys_read_write_handler(
     Ok(0)
 }
 
-pub fn sys_open_handler(
+pub fn filename_handler(
     ctx: &RawTracePointContext,
     mut event: SyscallEvent,
 ) -> Result<u128, EbpfError> {
-    let ptr = if event.syscall_id == SyscallID::OpenAt as u64 {
+    let ptr = if event.syscall_id == SyscallID::OpenAt as u64 || event.syscall_id == SyscallID::ExecveAt as u64 {
         event.arg_1 as *const u8
     } else {
-        // open or creat
+        // open or creat or execve
         event.arg_0 as *const u8
     };
     let length = read_string_and_send(ctx, ptr, event.get_event_id(), event.syscall_id);

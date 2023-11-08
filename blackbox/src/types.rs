@@ -72,6 +72,20 @@ pub struct ForkData {
 }
 
 #[derive(Debug, Clone)]
+pub struct ExecveData {
+    /// the file of the process to execute
+    pub filename: Option<OsString>,
+    /// the arguments passed to the process. This pointer is not read
+    pub args: u64,
+    /// the environment variables for the process. This pointer is not read
+    pub environment: u64,
+    /// the file descriptor to use instead of pwd. None if this call is not execveat
+    pub directory_fd: Option<i32>,
+    /// flags passed to execveat. None if this call is not execveat
+    pub flags: Option<i32>,
+}
+
+#[derive(Debug, Clone)]
 pub struct ExitData {
     /// The status value returned from the process to the operating sytem.
     /// The value status & 0xFF is returned to the parent process.
@@ -99,6 +113,7 @@ pub enum SyscallData {
     Socket(SocketData),
     Shutdown(ShutdownData),
     Fork(ForkData),
+    Execve(ExecveData),
     Exit(ExitData),
     Unhandled(UnhandledSyscallData),
 }

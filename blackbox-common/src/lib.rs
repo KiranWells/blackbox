@@ -108,6 +108,7 @@ impl GetEventId for SyscallEvent {
 }
 
 #[repr(u16)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SyscallID {
     Read = 0,
     Write = 1,
@@ -119,9 +120,19 @@ pub enum SyscallID {
     Shutdown = 48,
     Fork = 57,
     Execve = 59,
+    ExecveAt = 322,
     Exit = 60,
     ExitGroup = 231,
     Unhandled,
+}
+
+impl SyscallID {
+    pub fn is_noreturn(self) -> bool {
+        self == Self::Execve
+            || self == Self::ExecveAt
+            || self == Self::Exit
+            || self == Self::ExitGroup
+    }
 }
 
 impl<T> From<T> for SyscallID

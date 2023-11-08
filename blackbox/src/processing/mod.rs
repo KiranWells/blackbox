@@ -7,9 +7,7 @@ use crate::types::{
     UnhandledSyscallData, WriteData,
 };
 
-use crate::types::SyscallData::{
-    Close, Exit, Fork, Open, Read, Shutdown, Socket, Unhandled, Write,
-};
+use crate::types::SyscallData::*;
 
 #[derive(Debug)]
 struct FileAccess {
@@ -70,6 +68,7 @@ pub async fn start_processing(mut rx: tokio::sync::mpsc::Receiver<TraceEvent>) -
             }
 
             Fork(_) => {}
+            Execve(_) => {}
             Exit(ExitData { .. }) => {
                 // the process is done
                 // TODO: handle async events sent after this point
@@ -162,6 +161,7 @@ pub async fn start_processing(mut rx: tokio::sync::mpsc::Receiver<TraceEvent>) -
                     }
                 },
                 Fork(_) => {}
+                Execve(_) => {}
                 Exit(_) => {}
                 Unhandled(UnhandledSyscallData { syscall_id, .. }) => {
                     fa.unhandled_ids.push(syscall_id);

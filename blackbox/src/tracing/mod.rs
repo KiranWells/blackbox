@@ -50,8 +50,7 @@ impl SyscallBuilder {
         if let (Some(enter), Some(exit)) = (&self.enter_args, &self.exit_args) {
             (!enter.has_data() || self.data.is_some()) && (!exit.has_data() || self.data.is_some())
         } else if let Some(enter) = &self.enter_args {
-            enter.syscall_id == SyscallID::Exit as u64
-                || enter.syscall_id == SyscallID::ExitGroup as u64
+            SyscallID::from(enter.syscall_id).is_noreturn()
         } else {
             false
         }
@@ -323,15 +322,19 @@ async fn send_event(
                 r => Err(r as i32),
             },
         }),
-        SyscallID::Execve => SyscallData::Unhandled(crate::types::UnhandledSyscallData {
-            syscall_id: entry.syscall_id,
-            arg_0: entry.arg_0,
-            arg_1: entry.arg_1,
-            arg_2: entry.arg_2,
-            arg_3: entry.arg_3,
-            arg_4: entry.arg_4,
-            arg_5: entry.arg_5,
-            return_val: syscall.get_return(),
+        SyscallID::Execve => SyscallData::Execve(crate::types::ExecveData {
+            filename: data.map(OsString::from_vec),
+            args: entry.arg_1,
+            environment: entry.arg_2,
+            directory_fd: None,
+            flags: None,
+        }),
+        SyscallID::ExecveAt => SyscallData::Execve(crate::types::ExecveData {
+            filename: data.map(OsString::from_vec),
+            args: entry.arg_2,
+            environment: entry.arg_3,
+            directory_fd: Some(entry.arg_0 as i32),
+            flags: Some(entry.arg_5 as i32),
         }),
         SyscallID::Exit => SyscallData::Exit(crate::types::ExitData {
             status: entry.arg_0 as i32,
