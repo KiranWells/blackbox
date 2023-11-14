@@ -2,10 +2,12 @@ mod processing;
 mod tracing;
 mod types;
 
-use std::{fs::OpenOptions, path::PathBuf, process::Command};
+use std::{fs::OpenOptions, path::PathBuf, process::Command, sync::Arc};
 
 use clap::Parser;
 use color_eyre::eyre::Result;
+use tokio::sync::{Mutex, Notify};
+use types::ProcessingData;
 
 /// Blackbox: a kernel-level process analyzer. Collects
 /// system call data about the traced process similarly to
@@ -69,10 +71,17 @@ async fn main() -> Result<()> {
     // create message queue
     let (tx, rx) = tokio::sync::mpsc::channel(100);
 
+    let done_wait: Arc<Notify> = Arc::new(Notify::new());
+    let shared_state: Arc<Mutex<Option<ProcessingData>>> = Arc::new(Mutex::new(None));
+
     // spawn the processes in parallel
     // the child of su will be one pid greater, unless there is an extreme race condition
     let tracing_job = tokio::spawn(tracing::start_tracing(child.id() + 1, tx));
-    let processing_job = tokio::spawn(processing::start_processing(rx));
+    let processing_job = tokio::spawn(processing::start_processing(
+        rx,
+        Arc::clone(&done_wait),
+        Arc::clone(&shared_state),
+    ));
 
     // display info to UI
     // TODO

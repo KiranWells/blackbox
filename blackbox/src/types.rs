@@ -140,3 +140,208 @@ pub struct TraceEvent {
     pub monotonic_exit_timestamp: u64,
     pub data: SyscallData,
 }
+
+// ============================== processing types ==============================
+
+/// The access type for a file or directory; whether it was read, written to, or executed.
+/// Similar to the Unix file permissions, but for a specific file.
+#[derive(Debug, Default)]
+pub struct AccessType {
+    pub read: bool,
+    pub write: bool,
+    pub execute: bool,
+}
+
+//  TODO(ui): add a warning in the UI that shows to the user if there is something bad
+/// A process's overall file behavior in relation to various
+/// important system path categories.
+#[derive(Debug, Default)]
+pub struct FileBehavior {
+    /// The behavior of the process with respect to stdin, stdout, and stderr.
+    pub stdio: AccessType,
+    /// The behavior of the process with respect to the current directory.
+    /// File names matching this include:
+    /// - ./tempfile.txt
+    /// - ../tempfile.txt
+    pub current_dir: AccessType,
+    /// The behavior of the process with respect to the home directory.
+    /// File names matching this include:
+    /// - ~/.bash_history
+    /// - /home/<USER>/
+    pub home_dir: AccessType,
+    /// The behavior of the process with respect to the system.
+    /// File names matching this include:
+    /// - /opt/...
+    /// - /bin/..
+    pub system: AccessType,
+    /// The behavior of the process with respect to the runtime.
+    /// File names matching this include:
+    /// - /proc/
+    /// - /dev/nvme0
+    pub runtime: AccessType,
+}
+
+/// A summary of the file accesses: information as to the amount of accesses, bytes written/read, as well directories and overall behavior
+#[derive(Debug)]
+pub struct FileSummary {
+    /// number of accesses
+    pub access_count: u64,
+    /// number of bytes written
+    pub bytes_written: u64,
+    /// number of bytes read
+    pub bytes_read: u64,
+    /// the directories accessed by the process
+    pub directories: Vec<OsString>,
+    /// the overall behavior of the process with respect to major system directory types
+    pub behavior: FileBehavior,
+}
+
+/// The domain of the connection when created from a socket.
+/// Other includes unix sockets, netlink, and raw sockets.
+#[derive(Debug)]
+pub enum ConnectionDomain {
+    IPv4,
+    IPv6,
+    Other,
+}
+
+/// The protocol of the connection when created from a socket.
+#[derive(Debug)]
+pub enum ConnectionProtocol {
+    // TODO(processing): ICMP?
+    TCP,
+    UDP,
+    Other,
+}
+
+///General summary of the connection, including the start and endtime for each connection, as well the domain and protocol
+#[derive(Debug)]
+pub struct Connection {
+    /// the monotonic timestamp when the processs first began
+    pub start_time: u64,
+    /// the
+    pub end_time: u64,
+    pub domain: ConnectionDomain,
+    pub protocol: ConnectionProtocol,
+}
+
+/// A summary of the process's other pawned processes
+#[derive(Debug)]
+pub struct ProcessSummary {
+    /// the programs executed by the process
+    pub programs: Vec<Option<OsString>>,
+    /// the numberr of other processes spawned by the process, including forks
+    pub processes_created: u32,
+    /// the most common spawn type of the process
+    pub most_common_spawn_type: SpawnType,
+}
+
+/// A summary of the network accesses: information as to the number of
+/// connections, domains, and protocols used by the process
+#[derive(Debug)]
+pub struct NetworkSummary {
+    /// number of connections created by the process
+    pub connection_count: u64,
+    /// The domains accessed by the process
+    pub domains: Vec<ConnectionDomain>,
+    /// The protocols used by the process
+    pub protocols: Vec<ConnectionProtocol>,
+}
+
+/// The type of spawn: fork or exec
+#[derive(Debug)]
+pub enum SpawnType {
+    Fork,
+    Exec,
+}
+
+/// An event indicating a new process being spawned
+#[derive(Debug)]
+pub struct SpawnEvent {
+    /// Whether the process was forked or exec'd
+    pub spawn_type: SpawnType,
+    /// The monotonic timestamp when the processs first began
+    pub spawn_time: u64,
+    /// the process ID of the spawned process
+    pub process_id: u64,
+    /// the parent process ID of the spawned process
+    pub parent_id: u64,
+    /// the command/filename of the spawned process
+    pub command: Option<OsString>,
+    // TODO(tracing): add arguments and environment
+}
+
+/// The total sum of the data collected from the tracing and processing stages
+#[derive(Debug)]
+pub struct ProcessingData {
+    pub file_summary: FileSummary,
+    pub file_events: Vec<FileAccess>,
+    pub network_summary: NetworkSummary,
+    pub network_events: Vec<Connection>,
+    pub process_summary: ProcessSummary,
+    pub process_events: Vec<SpawnEvent>,
+    pub alerts: Vec<Alert>,
+    /// The system call IDs that were not handled by the tracing stage
+    pub unhandled_ids: Vec<u64>,
+}
+
+/// An alert indicating a potential security issue, such as writing to root directory.
+#[derive(Debug)]
+pub struct Alert {
+    /// The severity of the alert; lower is more severe
+    pub severity: u8,
+    /// A short message describing the alert
+    pub message: String,
+}
+
+/// A file access event that includes all of the relevant data about the file interaction
+#[derive(Debug)]
+pub struct FileAccess {
+    /// The name of the file accessed
+    pub file_name: Option<OsString>,
+    /// The file descriptor of the file accessed
+    pub file_descriptor: i32,
+    /// The number of bytes read or written
+    pub data_length: usize,
+    /// The data read from the file descriptor
+    pub read_data: Vec<u8>,
+    /// The data written to the file descriptor
+    pub write_data: Vec<u8>,
+    /// The monotonic timestamp when the process first began
+    pub start_time: u64,
+    /// The monotonic timestamp when the process completed
+    pub end_time: u64,
+    /// The number of errors that occured during the file access
+    pub error_count: i32,
+    /// The access type of the file access
+    pub access_type: AccessType,
+}
+
+impl Default for ProcessingData {
+    fn default() -> Self {
+        ProcessingData {
+            file_summary: FileSummary {
+                access_count: 0,
+                bytes_written: 0,
+                bytes_read: 0,
+                directories: vec![],
+                behavior: FileBehavior::default(),
+            },
+            file_events: vec![],
+            network_summary: NetworkSummary {
+                connection_count: 0,
+                domains: vec![],
+                protocols: vec![],
+            },
+            network_events: vec![],
+            process_summary: ProcessSummary {
+                programs: vec![],
+                processes_created: 0,
+                most_common_spawn_type: SpawnType::Fork,
+            },
+            process_events: vec![],
+            alerts: vec![],
+            unhandled_ids: vec![],
+        }
+    }
+}
