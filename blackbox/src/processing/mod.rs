@@ -247,7 +247,9 @@ pub async fn start_processing(
                 }
             }
             Execve(ExecveData { filename, .. }) => {
-                data.process_summary.programs.push(filename.clone());
+                if let Some(filename) = &filename {
+                    data.process_summary.programs.push(filename.clone());
+                }
                 if filename.is_some() {
                     update_behavior(
                         &mut data.file_summary.behavior,
