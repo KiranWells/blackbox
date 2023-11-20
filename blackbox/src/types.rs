@@ -145,20 +145,11 @@ pub struct TraceEvent {
 
 /// The access type for a file or directory; whether it was read, written to, or executed.
 /// Similar to the Unix file permissions, but for a specific file.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct AccessType {
     pub read: bool,
     pub write: bool,
     pub execute: bool,
-}
-impl Default for AccessType {
-    fn default() -> Self {
-        AccessType {
-            read: false,
-            write: false,
-            execute: false,
-        }
-    }
 }
 
 //  TODO(ui): add a warning in the UI that shows to the user if there is something bad
@@ -207,7 +198,7 @@ pub struct FileSummary {
 
 /// The domain of the connection when created from a socket.
 /// Other includes unix sockets, netlink, and raw sockets.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum ConnectionDomain {
     IPv4,
     IPv6,
@@ -215,7 +206,7 @@ pub enum ConnectionDomain {
 }
 
 /// The protocol of the connection when created from a socket.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum ConnectionProtocol {
     // TODO(processing): ICMP?
     TCP,
@@ -239,7 +230,7 @@ pub struct Connection {
 pub struct ProcessSummary {
     /// the programs executed by the process
     pub programs: Vec<Option<OsString>>,
-    /// the numberr of other processes spawned by the process, including forks
+    /// the number of other processes spawned by the process, including forks
     pub processes_created: u32,
     /// the most common spawn type of the process
     pub most_common_spawn_type: SpawnType,
@@ -258,7 +249,7 @@ pub struct NetworkSummary {
 }
 
 /// The type of spawn: fork or exec
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SpawnType {
     Fork,
     Exec,
@@ -272,9 +263,9 @@ pub struct SpawnEvent {
     /// The monotonic timestamp when the processs first began
     pub spawn_time: u64,
     /// the process ID of the spawned process
-    pub process_id: u64,
+    pub process_id: u32,
     /// the parent process ID of the spawned process
-    pub parent_id: u64,
+    pub parent_id: u32,
     /// the command/filename of the spawned process
     pub command: Option<OsString>,
     // TODO(tracing): add arguments and environment
@@ -352,5 +343,13 @@ impl Default for ProcessingData {
             alerts: vec![],
             unhandled_ids: vec![],
         }
+    }
+}
+
+impl AccessType {
+    pub fn update(&mut self, other: &Self) {
+        self.read |= other.read;
+        self.write |= other.write;
+        self.execute |= other.execute;
     }
 }
