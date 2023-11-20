@@ -145,11 +145,20 @@ pub struct TraceEvent {
 
 /// The access type for a file or directory; whether it was read, written to, or executed.
 /// Similar to the Unix file permissions, but for a specific file.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone)]
 pub struct AccessType {
     pub read: bool,
     pub write: bool,
     pub execute: bool,
+}
+impl Default for AccessType {
+    fn default() -> Self {
+        AccessType {
+            read: false,
+            write: false,
+            execute: false,
+        }
+    }
 }
 
 //  TODO(ui): add a warning in the UI that shows to the user if there is something bad
@@ -249,14 +258,14 @@ pub struct NetworkSummary {
 }
 
 /// The type of spawn: fork or exec
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum SpawnType {
     Fork,
     Exec,
 }
 
 /// An event indicating a new process being spawned
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct SpawnEvent {
     /// Whether the process was forked or exec'd
     pub spawn_type: SpawnType,
@@ -295,7 +304,7 @@ pub struct Alert {
 }
 
 /// A file access event that includes all of the relevant data about the file interaction
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FileAccess {
     /// The name of the file accessed
     pub file_name: Option<OsString>,

@@ -5,8 +5,10 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use crate::types::{
-    AccessType, CloseData, ExitData, FileAccess, OpenData, ProcessingData, ReadData, ShutdownData,
-    SocketData, TraceEvent, UnhandledSyscallData, WriteData,
+    AccessType, Alert, CloseData, Connection, ConnectionDomain, ExecveData, ExitData, 
+    FileAccess, FileBehavior, ForkData, FileSummary, NetworkSummary, OpenData, 
+    ProcessingData, ProcessSummary, ReadData, ShutdownData, SocketData, 
+    SpawnEvent, SpawnType, TraceEvent, UnhandledSyscallData, WriteData,
 };
 
 use crate::types::SyscallData::*;
@@ -18,7 +20,7 @@ pub async fn start_processing(
 ) -> Result<()> {
     // collect trace events into hashmap
     let mut file_hash: HashMap<i32, Vec<TraceEvent>> = HashMap::new(); //Map each event to their File_Descriptor (Same File)
-    let data = ProcessingData::default();
+    let mut data = ProcessingData::default();
     while let Some(i) = rx.recv().await {
         match i.clone().data {
             Open(OpenData {
@@ -62,15 +64,31 @@ pub async fn start_processing(
                 list.push(i);
             }
 
-            Fork(_) => {}
-            Execve(_) => {}
+            Fork(ForkData{
+                pid
+            }) => {
+                if let Ok(fd) = pid {
+                    let list = file_hash.entry(fd as i32).or_insert(vec![]);
+                    list.push(i);
+                }
+            }
+            Execve(ExecveData { directory_fd,..
+            }) => {
+                if let Some(fd) = directory_fd {
+                    let list = file_hash.entry(fd).or_insert(vec![]);
+                    list.push(i);
+                }
+            }
             Exit(ExitData { .. }) => {
                 // the process is done
                 // TODO: handle async events sent after this point
                 break;
             }
-            Unhandled(_) => {
-                // TODO
+            Unhandled(UnhandledSyscallData {
+                syscall_id, ..
+            }) => {
+                data.unhandled_ids.push(syscall_id); //not associated with any summary, just tracking ids
+
             }
         }
     }
@@ -78,6 +96,14 @@ pub async fn start_processing(
         //begin processing all events
         // sort value by monotonic time
         value.sort_by(|a, b| a.monotonic_exit_timestamp.cmp(&b.monotonic_exit_timestamp));
+
+        let mut new_spawn: SpawnEvent = SpawnEvent {
+            spawn_type: SpawnType::Fork,
+            spawn_time: 0,
+            process_id: 0,
+            parent_id: 0,
+            command: None,
+        };
 
         let mut fa = FileAccess {
             file_name: None,
@@ -90,12 +116,14 @@ pub async fn start_processing(
             error_count: 0,
             access_type: AccessType::default(),
         };
+
         // group by open -> close event pairs
         for event in value {
             match event.clone().data {
                 Open(OpenData {
                     filename,
                     file_descriptor,
+                    flags,
                     ..
                 }) => {
                     match file_descriptor {
@@ -109,6 +137,11 @@ pub async fn start_processing(
                     if filename.is_some() {
                         fa.file_name = filename;
                     }
+                    match flags {
+                        nix::fcntl::OFlag::O_RDONLY as i32 => fa.access_type.read = true,
+                        nix::fcntl::OFlag::O_WRONLY => fa.access_type.write = true,
+                        nix::fcntl::OFlag::O_RDWR => {fa.access_type.write = true; fa.access_type.read = true;},
+                    }
                     fa.start_time = event.clone().monotonic_enter_timestamp;
                 }
                 Read(ReadData {
@@ -117,11 +150,13 @@ pub async fn start_processing(
                     ..
                 }) => {
                     if let Some(mut dr) = data_read {
+                        fa.access_type.read = true;
                         fa.read_data.append(&mut dr);
                     }
                     match bytes_read {
                         Ok(br) => {
                             fa.data_length += br;
+                            data.file_summary.bytes_read += br as u64;
                         }
                         Err(_) => {
                             fa.error_count += 1;
@@ -134,11 +169,14 @@ pub async fn start_processing(
                     ..
                 }) => {
                     if let Some(mut dw) = data_written {
+                        fa.access_type.write = true;
                         fa.write_data.append(&mut dw);
                     }
                     match bytes_written {
                         Ok(bw) => {
                             fa.data_length += bw;
+                            data.file_summary.bytes_written += bw as u64;
+
                         }
                         Err(_) => {
                             fa.error_count += 1;
@@ -166,11 +204,31 @@ pub async fn start_processing(
                         fa.error_count += 1;
                     }
                 },
-                Fork(_) => {}
-                Execve(_) => {}
+                Fork(ForkData {
+                    pid
+                }) => {
+                    fa.access_type.execute = true;
+                    new_spawn.spawn_time = event.monotonic_enter_timestamp;
+                    data.process_events.push(new_spawn.clone())
+                }
+                Execve(ExecveData { 
+                    filename,
+                    args,
+                    environment,
+                    directory_fd, 
+                    flags,
+                    ..}) => {
+                        new_spawn.spawn_time = event.monotonic_enter_timestamp;
+                        new_spawn.spawn_type = SpawnType::Exec;
+                        fa.access_type.execute = true;
+                        if filename.is_some() {
+                            fa.file_name = filename;
+                        }
+                        data.process_events.push(new_spawn.clone())
+                    }
                 Exit(_) => {}
-                Unhandled(UnhandledSyscallData { syscall_id: _, .. }) => {
-                    // fa.unhandled_ids.push(syscall_id);
+                Unhandled(_) => {
+                    //Nothing to be done here, ids already collected
                 }
                 Shutdown(_) => {}
                 Close(CloseData {
@@ -181,6 +239,7 @@ pub async fn start_processing(
                     // finalize fileaccess
                     // send to UI (in the future)
                     // clear fa data
+                    data.file_events.push(fa.clone());
                     fa.data_length = 0;
                     fa.file_descriptor = -1;
                     fa.start_time = 0;
@@ -189,11 +248,21 @@ pub async fn start_processing(
                     fa.file_name.take();
                     fa.read_data.clear();
                     fa.write_data.clear();
+                    fa.access_type = AccessType::default();
                 }
             }
         }
     }
+
+    // determine behavior
+    for fa in data.file_events.iter() {
+        if fa.file_descriptor < 3 {
+            // stdio
+            data.file_summary.behavior.stdio
+        }
+    }
+
     *shared_state.lock().await = Some(data);
-    done_notifier.notify_waiters();
+    done_notifier.notify_waiters(); 
     Ok(())
 }
