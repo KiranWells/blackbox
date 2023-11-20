@@ -180,6 +180,7 @@ impl Application for App {
                         0 => ContainerType::Red,
                         1 => ContainerType::Orange,
                         2 => ContainerType::Yellow,
+                        3 => ContainerType::Card(5.0),
                         _ => ContainerType::Green,
                     })
                     .padding(5)
@@ -512,6 +513,18 @@ impl App {
             }
             row.width(Length::Fill).into()
         };
+        let name = if access.file_descriptor < 3 {
+            text(match access.file_descriptor {
+                0 => "Standard In",
+                1 => "Standard Out",
+                2 => "Standard Error",
+                _ => unreachable!(),
+            })
+        } else if let Some(name) = &access.file_name {
+            text(name.to_string_lossy()).font(Font::MONOSPACE)
+        } else {
+            text("No file name recorded")
+        };
         container(
             column![
                 row![
@@ -519,15 +532,7 @@ impl App {
                         access.file_descriptor,
                         "The Unix file descriptor for this file"
                     ),
-                    text(
-                        access
-                            .file_name
-                            .clone()
-                            .map(|s| s.to_string_lossy().to_string())
-                            .unwrap_or("No file name".into())
-                    )
-                    .font(Font::MONOSPACE)
-                    .size(20),
+                    name.size(20),
                     Self::create_access_mark(access.access_type),
                 ]
                 .align_items(iced::Alignment::Center)
@@ -571,7 +576,11 @@ impl App {
                             .iter()
                             .map(|b| {
                                 let c = char::from_u32(*b as u32).unwrap_or('\0');
-                                if c.is_ascii_digit() || c.is_alphabetic() {
+                                if c.is_ascii_digit()
+                                    || c.is_alphabetic()
+                                    || (c.is_ascii()
+                                        && !(c.is_ascii_control() || c.is_ascii_whitespace()))
+                                {
                                     c
                                 } else {
                                     '.'
@@ -689,7 +698,7 @@ fn header(t: impl ToString) -> Element<'static> {
 
 fn duration(start: u64, end: u64) -> String {
     let time = end as i64 - start as i64;
-    if time < 0 {
+    if time < 0 || start == 0 {
         return String::from("??");
     }
     match time {

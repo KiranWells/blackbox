@@ -399,3 +399,11 @@ impl SpawnType {
         }
     }
 }
+
+impl AccessType {
+    pub fn update(&mut self, other: &Self) {
+        self.read |= other.read;
+        self.write |= other.write;
+        self.execute |= other.execute;
+    }
+}
