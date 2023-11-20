@@ -354,3 +354,48 @@ impl AccessType {
         self.execute |= other.execute;
     }
 }
+
+impl ConnectionDomain {
+    pub fn text(self) -> String {
+        format!("{:?}", self)
+    }
+
+    pub fn tooltip(self) -> String {
+        match self {
+            ConnectionDomain::IPv4 => String::from("IP version 4"),
+            ConnectionDomain::IPv6 => String::from("IP version 6"),
+            ConnectionDomain::Other => {
+                String::from("Another domain, such as raw sockets or unix domains")
+            }
+        }
+    }
+}
+
+impl ConnectionProtocol {
+    pub fn text(self) -> String {
+        format!("{:?}", self)
+    }
+
+    pub fn tooltip(self) -> String {
+        match self {
+            ConnectionProtocol::TCP => String::from("Transmission Control Protocol"),
+            ConnectionProtocol::UDP => String::from("User Datagram Protocol"),
+            ConnectionProtocol::Other => String::from("Another protocol such as raw sockets"),
+        }
+    }
+}
+
+impl SpawnType {
+    pub fn text(self) -> String {
+        format!("{:?}", self)
+    }
+
+    pub fn tooltip(self) -> String {
+        match self {
+            SpawnType::Fork => String::from("This process was spawned by forking"),
+            SpawnType::Exec => {
+                String::from("This process was spawned by executing another command")
+            }
+        }
+    }
+}

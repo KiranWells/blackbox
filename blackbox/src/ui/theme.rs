@@ -1,5 +1,5 @@
 use iced::{
-    theme::{Button, Scrollable, Text},
+    theme::{Button, Scrollable, Svg, Text},
     Background, Color,
 };
 
@@ -75,7 +75,8 @@ pub enum ContainerType {
     Orange,
     Yellow,
     Green,
-    Card,
+    Card(f32),
+    SubtleCard(f32),
 }
 
 impl iced::widget::container::StyleSheet for Theme {
@@ -111,10 +112,16 @@ impl iced::widget::container::StyleSheet for Theme {
                 border_radius: 5.0.into(),
                 ..Default::default()
             },
-            ContainerType::Card => iced::widget::container::Appearance {
+            ContainerType::Card(radius) => iced::widget::container::Appearance {
+                text_color: Some(BLACK),
+                background: Some(Background::Color(MID_WHITE)),
+                border_radius: (*radius).into(),
+                ..Default::default()
+            },
+            ContainerType::SubtleCard(radius) => iced::widget::container::Appearance {
                 text_color: Some(BLACK),
                 background: Some(Background::Color(OFF_WHITE)),
-                border_radius: 5.0.into(),
+                border_radius: (*radius).into(),
                 ..Default::default()
             },
         }
@@ -132,7 +139,7 @@ impl iced::widget::scrollable::StyleSheet for Theme {
                 border_width: 0.0,
                 border_color: WHITE,
                 scroller: iced::widget::scrollable::Scroller {
-                    color: OFF_WHITE,
+                    color: ACCENT_ALT,
                     border_radius: 3.0.into(),
                     border_width: 0.0,
                     border_color: WHITE,
@@ -155,9 +162,9 @@ impl iced::widget::scrollable::StyleSheet for Theme {
                 border_color: WHITE,
                 scroller: iced::widget::scrollable::Scroller {
                     color: if is_mouse_over_scrollbar {
-                        ACCENT
+                        OFF_BLACK
                     } else {
-                        OFF_WHITE
+                        ACCENT
                     },
                     border_radius: 3.0.into(),
                     border_width: 0.0,
@@ -165,6 +172,17 @@ impl iced::widget::scrollable::StyleSheet for Theme {
                 },
             },
             Scrollable::Custom(_) => unimplemented!(),
+        }
+    }
+}
+
+impl iced::widget::svg::StyleSheet for Theme {
+    type Style = Svg;
+
+    fn appearance(&self, style: &Self::Style) -> iced::widget::svg::Appearance {
+        match style {
+            Svg::Default => Default::default(),
+            Svg::Custom(_) => unimplemented!(),
         }
     }
 }
@@ -179,6 +197,12 @@ pub const OFF_WHITE: Color = Color {
     r: 230.0 / 255.0,
     g: 230.0 / 255.0,
     b: 230.0 / 255.0,
+    a: 1.0,
+};
+pub const MID_WHITE: Color = Color {
+    r: 175.0 / 255.0,
+    g: 179.0 / 255.0,
+    b: 174.0 / 255.0,
     a: 1.0,
 };
 pub const BLACK: Color = Color {
@@ -209,17 +233,17 @@ pub const RED: Color = Color {
     r: 195.0 / 255.0,
     g: 84.0 / 255.0,
     b: 84.0 / 255.0,
-    a: 1.0,
+    a: 0.8,
 };
 pub const ORANGE: Color = Color {
     r: 219.0 / 255.0,
     g: 138.0 / 255.0,
     b: 80.0 / 255.0,
-    a: 1.0,
+    a: 0.8,
 };
 pub const YELLOW: Color = Color {
     r: 241.0 / 255.0,
     g: 218.0 / 255.0,
     b: 116.0 / 255.0,
-    a: 1.0,
+    a: 0.8,
 };

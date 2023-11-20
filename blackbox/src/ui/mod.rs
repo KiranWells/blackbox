@@ -2,8 +2,9 @@ use std::sync::Arc;
 
 use color_eyre::Result;
 use iced::{
+    font::{self, Family, Weight},
     theme::Button,
-    widget::{button, column, container, row, scrollable, text, Row, Space},
+    widget::{button, column, container, row, scrollable, svg, text, tooltip, Row, Space},
     Application, Command, Executor, Font, Length, Settings,
 };
 use tokio::sync::{Mutex, Notify};
@@ -16,6 +17,8 @@ use crate::types::{
 mod theme;
 
 use theme::{ContainerType, Theme};
+
+use self::theme::OFF_BLACK;
 
 struct CurrentExecutor {}
 
@@ -40,7 +43,13 @@ pub fn run(
         flags: Flags { done, shared_state },
         id: None,
         window: Default::default(),
-        default_font: Default::default(),
+        default_font: {
+            Font {
+                family: Family::Name("Raleway"),
+                weight: Weight::Medium,
+                ..Font::DEFAULT
+            }
+        },
         default_text_size: 16.0,
         antialiasing: false,
         exit_on_close_request: true,
@@ -77,6 +86,7 @@ enum Tab {
 #[derive(Debug, Clone)]
 enum Message {
     Done(Box<ProcessingData>),
+    FontLoaded(Result<(), font::Error>),
     SwitchTab(Tab),
 }
 
@@ -95,13 +105,19 @@ impl Application for App {
                 state: State::Processing,
                 data: ProcessingData::default(),
             },
-            Command::perform(
-                async move {
-                    flags.done.notified().await;
-                    Box::new(flags.shared_state.lock().await.take().unwrap())
-                },
-                Message::Done,
-            ),
+            Command::batch(vec![
+                font::load(
+                    include_bytes!("../../resources/Raleway-VariableFont_wght.ttf").as_slice(),
+                )
+                .map(Message::FontLoaded),
+                Command::perform(
+                    async move {
+                        flags.done.notified().await;
+                        Box::new(flags.shared_state.lock().await.take().unwrap())
+                    },
+                    Message::Done,
+                ),
+            ]),
         )
     }
 
@@ -120,43 +136,84 @@ impl Application for App {
                 self.state = State::OnTab(tab);
                 Command::none()
             }
+            Message::FontLoaded(r) => {
+                r.unwrap();
+                Command::none()
+            }
         }
     }
 
     fn view(&self) -> iced::Element<'_, Self::Message, iced::Renderer<Self::Theme>> {
+        let handle = iced::widget::svg::Handle::from_memory(
+            include_bytes!("../../resources/logo.svg").to_vec(),
+        );
+        let logo = container(svg(handle)).padding(10);
+
         let tabs = column(
             vec![Tab::Summary, Tab::File, Tab::Network, Tab::Process]
                 .into_iter()
                 .map(|tab| {
-                    button(text(format!("{:?}", tab)))
-                        .on_press(Message::SwitchTab(tab))
-                        .style(if matches!(self.state, State::OnTab(t) if t == tab) {
-                            Button::Primary
-                        } else {
-                            Button::Secondary
-                        })
-                        .width(Length::Fill)
-                        .into()
+                    button(text(format!("{:?}", tab)).font(Font {
+                        weight: Weight::Semibold,
+                        ..Default::default()
+                    }))
+                    .on_press(Message::SwitchTab(tab))
+                    .style(if matches!(self.state, State::OnTab(t) if t == tab) {
+                        Button::Primary
+                    } else {
+                        Button::Secondary
+                    })
+                    .width(Length::Fill)
+                    .into()
                 })
                 .collect(),
         )
         .spacing(10)
-        .padding(10)
-        .width(Length::FillPortion(1));
+        .padding(10);
+        let alerts = self
+            .data
+            .alerts
+            .iter()
+            .map(|alert| {
+                container(text(&alert.message))
+                    .style(match alert.severity {
+                        0 => ContainerType::Red,
+                        1 => ContainerType::Orange,
+                        2 => ContainerType::Yellow,
+                        _ => ContainerType::Green,
+                    })
+                    .padding(5)
+                    .width(Length::Fill)
+                    .into()
+            })
+            .collect::<Vec<Element>>();
+        let alerts = container(scrollable(column(alerts).spacing(5)))
+            .padding(10.0)
+            .style(ContainerType::SubtleCard(10.0))
+            .width(Length::Fill);
         match &self.state {
-            State::Processing => row!(
+            State::Processing => container(row!(
                 Space::new(Length::FillPortion(3), 0),
                 text("Processing, please wait. If you need to interact with the process, use the command line where Blackbox was started.").size(20).width(Length::FillPortion(3)),
                 Space::new(Length::FillPortion(3), 0),
-            ).into(),
+            )).height(Length::Fill).center_y().into(),
             State::OnTab(tab) => row!(
-                tabs,
-                container(match tab {
-                    Tab::Summary => Self::summary_view(&self.data),
-                    Tab::File => Self::file_view(&self.data),
-                    Tab::Network => Self::network_view(&self.data),
-                    Tab::Process => Self::process_view(&self.data),
-                }).width(Length::FillPortion(3)),
+                container(column![logo, tabs])
+                    .style(ContainerType::Card(0.0))
+                    .height(Length::Fill)
+                    .width(Length::FillPortion(1)),
+                column!(
+                    alerts,
+                    match tab {
+                        Tab::Summary => Self::summary_view(&self.data),
+                        Tab::File => Self::file_view(&self.data),
+                        Tab::Network => Self::network_view(&self.data),
+                        Tab::Process => Self::process_view(&self.data),
+                    }
+                )
+                .spacing(10.0)
+                .width(Length::FillPortion(3))
+                .padding(10),
             ).into()
         }
     }
@@ -170,49 +227,29 @@ type Element<'a> = iced::Element<
 
 impl App {
     fn summary_view(data: &ProcessingData) -> Element<'_> {
-        let alerts = data
-            .alerts
-            .iter()
-            .map(|alert| {
-                container(text(&alert.message))
-                    .style(match alert.severity {
-                        0 => ContainerType::Red,
-                        1 => ContainerType::Orange,
-                        2 => ContainerType::Yellow,
-                        _ => ContainerType::Card,
-                    })
-                    .padding(5)
-                    .width(Length::Fill)
-                    .into()
-            })
-            .collect::<Vec<Element>>();
-        let alerts = scrollable(column(alerts).spacing(5))
-            .height(100)
-            .width(Length::Fill);
-
-        let file_summary = row![
-            container(text("File access:")).padding(10).width(100),
+        let file_summary = container(row![
+            container(header("File access:")).width(150),
             Self::create_file_summary(&data.file_summary),
-        ];
+        ])
+        .padding(10.0)
+        .style(ContainerType::SubtleCard(10.0));
 
-        let network_summary = row![
-            container(text("Network:")).padding(10).width(100),
+        let network_summary = container(row![
+            container(header("Network:")).width(150),
             Self::create_network_summary(&data.network_summary)
-        ];
+        ])
+        .padding(10.0)
+        .style(ContainerType::SubtleCard(10.0));
 
-        let process_summary = row![
-            container(text("Processes:")).padding(10).width(100),
+        let process_summary = container(row![
+            container(header("Processes:")).width(150),
             Self::create_process_summary(&data.process_summary)
-        ];
+        ])
+        .width(Length::Fill)
+        .padding(10.0)
+        .style(ContainerType::SubtleCard(10.0));
 
-        let main_view = column!(
-            text("Alerts:"),
-            alerts,
-            file_summary,
-            network_summary,
-            process_summary
-        )
-        .spacing(10);
+        let main_view = column!(file_summary, network_summary, process_summary).spacing(10);
         scrollable(main_view)
             .width(Length::Fill)
             .height(Length::Fill)
@@ -221,45 +258,61 @@ impl App {
 
     fn file_view(data: &ProcessingData) -> Element<'_> {
         column![
-            text("Summary:"),
-            Self::create_file_summary(&data.file_summary),
-            text("File Access Details:"),
-            scrollable(column(
-                data.file_events
-                    .iter()
-                    .map(Self::create_file_event)
-                    .collect()
-            )),
+            header("Summary:"),
+            container(Self::create_file_summary(&data.file_summary))
+                .padding(10.0)
+                .style(ContainerType::SubtleCard(10.0)),
+            header("File Access Details:"),
+            scrollable(
+                column(
+                    data.file_events
+                        .iter()
+                        .map(Self::create_file_event)
+                        .collect()
+                )
+                .spacing(10.0)
+            ),
         ]
         .into()
     }
 
     fn network_view(data: &ProcessingData) -> Element<'_> {
         column![
-            text("Summary:"),
-            Self::create_network_summary(&data.network_summary),
-            text("Connection Details:"),
-            scrollable(column(
-                data.network_events
-                    .iter()
-                    .map(Self::create_connection)
-                    .collect()
-            )),
+            header("Summary:"),
+            container(Self::create_network_summary(&data.network_summary))
+                .padding(10.0)
+                .style(ContainerType::SubtleCard(10.0)),
+            header("Connection Details:"),
+            scrollable(
+                column(
+                    data.network_events
+                        .iter()
+                        .map(Self::create_connection)
+                        .collect()
+                )
+                .spacing(10.0)
+            ),
         ]
         .into()
     }
 
     fn process_view(data: &ProcessingData) -> Element<'_> {
         column![
-            text("Summary:"),
-            Self::create_process_summary(&data.process_summary),
-            text("Process Details:"),
-            scrollable(column(
-                data.process_events
-                    .iter()
-                    .map(Self::create_spawn_event)
-                    .collect()
-            )),
+            header("Summary:"),
+            container(Self::create_process_summary(&data.process_summary))
+                .width(Length::Fill)
+                .padding(10.0)
+                .style(ContainerType::SubtleCard(10.0)),
+            header("Process Details:"),
+            scrollable(
+                column(
+                    data.process_events
+                        .iter()
+                        .map(Self::create_spawn_event)
+                        .collect()
+                )
+                .spacing(10.0)
+            ),
         ]
         .into()
     }
@@ -267,68 +320,75 @@ impl App {
     fn create_access_mark(access: AccessType) -> Element<'static> {
         let mut boxes = vec![];
         if access.read {
-            boxes.push(
-                container(text("R"))
-                    .style(ContainerType::Green)
-                    .width(25)
-                    .height(25)
-                    .into(),
-            );
+            boxes.push(("R", "read", ContainerType::Yellow));
         }
         if access.write {
-            boxes.push(
-                container(text("W"))
-                    .style(ContainerType::Yellow)
-                    .width(25)
-                    .height(25)
-                    .into(),
-            );
+            boxes.push(("W", "write", ContainerType::Orange));
         }
         if access.execute {
-            boxes.push(
-                container(text("X"))
-                    .style(ContainerType::Red)
-                    .width(25)
-                    .height(25)
-                    .into(),
-            );
+            boxes.push(("X", "execute", ContainerType::Red));
         }
-        container(row(boxes)).into()
+        container(
+            row(boxes
+                .into_iter()
+                .map(|(letter, word, style)| {
+                    tooltip(
+                        container(text(letter).font(Font {
+                            weight: Weight::Bold,
+                            family: Family::Monospace,
+                            ..Default::default()
+                        }))
+                        .style(style)
+                        .width(25)
+                        .height(25)
+                        .center_x()
+                        .center_y(),
+                        word,
+                        tooltip::Position::FollowCursor,
+                    )
+                    .style(ContainerType::SubtleCard(5.0))
+                    .into()
+                })
+                .collect())
+            .spacing(3),
+        )
+        .into()
     }
 
     fn create_file_summary(file_summary: &FileSummary) -> Element<'static> {
         column![
             row![
-                container(column![
-                    row![
-                        text("Standard I/O:"),
-                        Space::with_width(Length::Fill),
-                        Self::create_access_mark(file_summary.behavior.stdio),
-                    ],
-                    row![
-                        text("Current Directory:"),
-                        Space::with_width(Length::Fill),
-                        Self::create_access_mark(file_summary.behavior.current_dir),
-                    ],
-                    row![
-                        text("Home Directory:"),
-                        Space::with_width(Length::Fill),
-                        Self::create_access_mark(file_summary.behavior.home_dir),
-                    ],
-                    row![
-                        text("System Files:"),
-                        Space::with_width(Length::Fill),
-                        Self::create_access_mark(file_summary.behavior.system),
-                    ],
-                    row![
-                        text("Runtime Directories:"),
-                        Space::with_width(Length::Fill),
-                        Self::create_access_mark(file_summary.behavior.runtime),
-                    ],
-                ])
-                .padding(10)
-                .width(Length::FillPortion(1))
-                .style(ContainerType::Card),
+                container(
+                    column![
+                        row![
+                            tooltip(text("Standard I/O:"), "The normal console input and output of the program.", tooltip::Position::FollowCursor).style(ContainerType::SubtleCard(5.0)),
+                            Space::with_width(Length::Fill),
+                            Self::create_access_mark(file_summary.behavior.stdio),
+                        ],
+                        row![
+                            tooltip(text("Current Directory:"), "The directory that the process was executed in.", tooltip::Position::FollowCursor).style(ContainerType::SubtleCard(5.0)),
+                            Space::with_width(Length::Fill),
+                            Self::create_access_mark(file_summary.behavior.current_dir),
+                        ],
+                        row![
+                            tooltip(text("Home Directory:"), "The user's home directory, and any folders inside it.", tooltip::Position::FollowCursor).style(ContainerType::SubtleCard(5.0)),
+                            Space::with_width(Length::Fill),
+                            Self::create_access_mark(file_summary.behavior.home_dir),
+                        ],
+                        row![
+                            tooltip(text("System Files:"), "System files, such as installation directories and root directories. Processes should normally only execute files from here.", tooltip::Position::FollowCursor).style(ContainerType::SubtleCard(5.0)),
+                            Space::with_width(Length::Fill),
+                            Self::create_access_mark(file_summary.behavior.system),
+                        ],
+                        row![
+                            tooltip(text("Runtime Directories:"), "Special directories such as /tmp and /proc that are managed by the system when it is running.", tooltip::Position::FollowCursor).style(ContainerType::SubtleCard(5.0)),
+                            Space::with_width(Length::Fill),
+                            Self::create_access_mark(file_summary.behavior.runtime),
+                        ],
+                    ]
+                    .spacing(3)
+                )
+                .width(Length::FillPortion(1)),
                 container(column![
                     text(format!("Files Accessed: {}", file_summary.access_count)),
                     text(format!("Total Bytes Read: {}", file_summary.bytes_read)),
@@ -338,15 +398,22 @@ impl App {
                     )),
                 ])
                 .width(Length::FillPortion(1))
-                .style(ContainerType::Card),
-            ],
-            column(
-                file_summary
-                    .directories
-                    .iter()
-                    .map(|dir| monospace(dir.to_string_lossy()))
-                    .collect()
-            ),
+            ]
+            .spacing(10),
+            row![
+                text("Directories accessed:"),
+                scrollable(
+                    column(
+                        file_summary
+                            .directories
+                            .iter()
+                            .map(|dir| monospace(dir.to_string_lossy()))
+                            .collect()
+                    )
+                    .spacing(3)
+                )
+            ]
+            .spacing(10.0),
         ]
         .width(Length::FillPortion(5))
         .into()
@@ -361,24 +428,32 @@ impl App {
             row![
                 column![
                     text("Domains:"),
-                    scrollable(column(
-                        network_summary
-                            .domains
-                            .iter()
-                            .map(|domain| text(format!("{:?}", domain)).into())
-                            .collect()
-                    ))
-                ],
+                    scrollable(
+                        column(
+                            network_summary
+                                .domains
+                                .iter()
+                                .map(|domain| chip(domain.text(), domain.tooltip()))
+                                .collect()
+                        )
+                        .spacing(3)
+                    )
+                ]
+                .width(Length::FillPortion(1)),
                 column![
                     text("Protocols:"),
-                    scrollable(column(
-                        network_summary
-                            .protocols
-                            .iter()
-                            .map(|protocol| text(format!("{:?}", protocol)).into())
-                            .collect()
-                    ))
+                    scrollable(
+                        column(
+                            network_summary
+                                .protocols
+                                .iter()
+                                .map(|protocol| chip(protocol.text(), protocol.tooltip()))
+                                .collect()
+                        )
+                        .spacing(3)
+                    )
                 ]
+                .width(Length::FillPortion(1))
             ],
         ]
         .into()
@@ -390,10 +465,14 @@ impl App {
                 "Total Processes Spawned: {}",
                 process_summary.processes_created,
             )),
-            text(format!(
-                "Most Common Spawn Type: {:?}",
-                process_summary.most_common_spawn_type,
-            )),
+            row![
+                text("Most Common Spawn Type:"),
+                chip(
+                    process_summary.most_common_spawn_type.text(),
+                    process_summary.most_common_spawn_type.tooltip()
+                )
+            ]
+            .spacing(5),
             row![
                 text("Processes executed:"),
                 scrollable(
@@ -406,42 +485,76 @@ impl App {
                     )
                     .spacing(5)
                 ),
-            ],
+            ]
+            .spacing(10)
+            .align_items(iced::Alignment::Center),
         ]
+        .spacing(3)
         .into()
     }
 
     fn create_file_event(access: &FileAccess) -> Element<'static> {
-        let data_views = Row::new()
-            .push(Self::create_hex_preview(&access.read_data))
-            .push(Self::create_hex_preview(&access.write_data));
-        column![
-            row![
-                monospace(access.file_descriptor),
-                text(
-                    access
-                        .file_name
-                        .clone()
-                        .map(|s| s.to_string_lossy().to_string())
-                        .unwrap_or("No file name".into())
-                )
-                .font(Font::MONOSPACE)
-                .size(20),
-                Self::create_access_mark(access.access_type),
-            ],
-            data_views.width(Length::Fill),
-        ]
+        let data_views: Element = if access.read_data.is_empty() && access.write_data.is_empty() {
+            container(text("No file data recorded.")).into()
+        } else {
+            let mut row = Row::new();
+            if !access.read_data.is_empty() {
+                row = row.push(column!(
+                    text("Read data:"),
+                    Self::create_hex_preview(&access.read_data)
+                ));
+            }
+            if !access.write_data.is_empty() {
+                row = row.push(column!(
+                    text("Write data:"),
+                    Self::create_hex_preview(&access.write_data)
+                ));
+            }
+            row.width(Length::Fill).into()
+        };
+        container(
+            column![
+                row![
+                    chip(
+                        access.file_descriptor,
+                        "The Unix file descriptor for this file"
+                    ),
+                    text(
+                        access
+                            .file_name
+                            .clone()
+                            .map(|s| s.to_string_lossy().to_string())
+                            .unwrap_or("No file name".into())
+                    )
+                    .font(Font::MONOSPACE)
+                    .size(20),
+                    Self::create_access_mark(access.access_type),
+                ]
+                .align_items(iced::Alignment::Center)
+                .spacing(10),
+                text(format!("Total Data Length: {}", access.data_length)),
+                text(format!(
+                    "Duration: {}",
+                    duration(access.start_time, access.end_time)
+                )),
+                data_views,
+            ]
+            .spacing(5),
+        )
+        .width(Length::Fill)
+        .style(ContainerType::SubtleCard(5.0))
+        .padding(5.0)
         .into()
     }
 
     fn create_hex_preview(bytes: &[u8]) -> Element<'static> {
         let hex = column(
             bytes
-                .chunks_exact(16)
+                .chunks(16)
                 .map(|chunk| {
                     row(chunk
                         .iter()
-                        .map(|b| monospace(format!("{:02x}", b)))
+                        .map(|b| text(format!("{:02x}", b)).font(Font::MONOSPACE).into())
                         .collect())
                     .spacing(3)
                     .into()
@@ -451,9 +564,9 @@ impl App {
         .spacing(3);
         let string = column(
             bytes
-                .chunks_exact(16)
+                .chunks(16)
                 .map(|chunk| {
-                    monospace(
+                    text(
                         chunk
                             .iter()
                             .map(|b| {
@@ -466,6 +579,8 @@ impl App {
                             })
                             .collect::<String>(),
                     )
+                    .font(Font::MONOSPACE)
+                    .into()
                 })
                 .collect(),
         )
@@ -474,36 +589,121 @@ impl App {
     }
 
     fn create_connection(conn: &Connection) -> Element<'static> {
-        column![
-            text(format!("Duration: {}", conn.end_time - conn.start_time)),
-            text(format!("Protocol: {:?}", conn.protocol)),
-            text(format!("Domain: {:?}", conn.domain)),
-        ]
+        container(
+            column![
+                text(format!(
+                    "Duration: {}",
+                    duration(conn.start_time, conn.end_time)
+                )),
+                row![
+                    text("Protocol:"),
+                    chip(conn.protocol.text(), conn.protocol.tooltip())
+                ]
+                .spacing(5),
+                row![
+                    text("Domain:"),
+                    chip(conn.domain.text(), conn.domain.tooltip())
+                ]
+                .spacing(5),
+            ]
+            .spacing(3),
+        )
+        .style(ContainerType::SubtleCard(5.0))
+        .width(Length::Fill)
+        .padding(5.0)
         .into()
     }
 
     fn create_spawn_event(spawn: &SpawnEvent) -> Element<'static> {
-        column![
+        container(column![
             row![
-                monospace(
-                    spawn
-                        .command
-                        .clone()
-                        .unwrap_or("No Command".into())
-                        .to_string_lossy()
-                ),
-                monospace(format!("{} -> {}", spawn.parent_id, spawn.process_id))
-            ],
+                match &spawn.command {
+                    Some(os_str) => {
+                        text(os_str.to_string_lossy())
+                            .font(Font::MONOSPACE)
+                            .size(20)
+                    }
+                    None => {
+                        text("No Command").size(20)
+                    }
+                },
+                row![
+                    chip(spawn.parent_id, "The parent Process ID (PID)"),
+                    text("-"),
+                    chip(spawn.process_id, "The child Process ID (PID)")
+                ]
+                .align_items(iced::Alignment::Center)
+                .spacing(3)
+            ]
+            .align_items(iced::Alignment::Center)
+            .spacing(10),
             text(format!("Timestamp: {}", spawn.spawn_time)),
-            text(format!("Spawn Type: {:?}", spawn.spawn_type)),
-        ]
+            row![
+                text("Spawn Type:"),
+                chip(spawn.spawn_type.text(), spawn.spawn_type.tooltip())
+            ]
+            .spacing(5),
+        ])
+        .style(ContainerType::SubtleCard(5.0))
+        .width(Length::Fill)
+        .padding(5.0)
         .into()
     }
 }
 
 fn monospace(t: impl ToString) -> Element<'static> {
     container(text(t).font(Font::MONOSPACE))
-        .style(ContainerType::Card)
-        .padding(3)
+        .style(ContainerType::Card(3.0))
+        .padding([3, 5, 2, 5])
         .into()
+}
+
+fn chip(t: impl ToString, tip: impl ToString) -> Element<'static> {
+    tooltip(
+        container(text(t).size(12).font(Font {
+            weight: Weight::Semibold,
+            ..Default::default()
+        }))
+        .style(ContainerType::Card(25.0))
+        .padding([3, 7, 2, 7]),
+        tip,
+        tooltip::Position::FollowCursor,
+    )
+    .style(ContainerType::SubtleCard(5.0))
+    .into()
+}
+
+fn header(t: impl ToString) -> Element<'static> {
+    container(
+        text(t)
+            .size(18)
+            .font(Font {
+                weight: Weight::Bold,
+                ..Default::default()
+            })
+            .style(OFF_BLACK),
+    )
+    .padding([10, 0, 5, 0])
+    .into()
+}
+
+fn duration(start: u64, end: u64) -> String {
+    let time = end as i64 - start as i64;
+    if time < 0 {
+        return String::from("??");
+    }
+    match time {
+        t if t > 1e9 as i64 => {
+            format!("{:.1}s", (t as f64) / 1e9)
+        }
+        t if t > 1e6 as i64 => {
+            format!("{:.1}ms", (t as f64) / 1e6)
+        }
+        t if t > 1e3 as i64 => {
+            format!("{:.1}µs", (t as f64) / 1e3)
+        }
+        t => {
+            format!("{:.1}ns", (t as f64))
+        }
+    }
 }
