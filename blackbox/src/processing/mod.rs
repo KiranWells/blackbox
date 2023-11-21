@@ -79,7 +79,7 @@ pub async fn start_processing(
         }
     }
     for (_, mut value) in file_hash {
-        //begin processing all events
+        // begin processing all events
         // sort value by monotonic time
         value.sort_by(|a, b| a.monotonic_exit_timestamp.cmp(&b.monotonic_exit_timestamp));
 
@@ -123,7 +123,7 @@ pub async fn start_processing(
                         }
                         _ => {}
                     }
-                    fa.start_time = event.clone().monotonic_enter_timestamp;
+                    fa.start_time = event.monotonic_enter_timestamp;
                 }
                 Read(ReadData {
                     data_read,
@@ -167,7 +167,7 @@ pub async fn start_processing(
                     file_descriptor, ..
                 }) => {
                     fa.file_descriptor = file_descriptor;
-                    fa.end_time = event.clone().monotonic_exit_timestamp - fa.start_time;
+                    fa.end_time = event.monotonic_exit_timestamp;
                     // finalize fileaccess
                     data.file_events.push(fa.clone());
                     // clear fa data
@@ -226,11 +226,13 @@ pub async fn start_processing(
                 }
                 Shutdown(ShutdownData { .. }) => {
                     conn.end_time = event.monotonic_exit_timestamp;
+                    data.network_events.push(conn.clone());
                 }
                 _ => unreachable!(),
             }
         }
     }
+
     spawns.sort_by(|a, b| a.monotonic_exit_timestamp.cmp(&b.monotonic_exit_timestamp));
 
     for event in spawns {
@@ -247,7 +249,9 @@ pub async fn start_processing(
                 }
             }
             Execve(ExecveData { filename, .. }) => {
-                data.process_summary.programs.push(filename.clone());
+                if let Some(filename) = &filename {
+                    data.process_summary.programs.push(filename.clone());
+                }
                 if filename.is_some() {
                     update_behavior(
                         &mut data.file_summary.behavior,
@@ -293,6 +297,9 @@ pub async fn start_processing(
 
         update_behavior(&mut data.file_summary.behavior, &fa.access_type, &name);
     }
+    data.file_summary.directories.sort();
+    data.file_summary.directories.dedup();
+    data.file_summary.directories.retain(|d| !d.is_empty());
 
     // process summary
     let mut fork_count = 0;
@@ -316,45 +323,52 @@ pub async fn start_processing(
         data.network_summary.domains.push(conn.domain);
         data.network_summary.protocols.push(conn.protocol);
     }
+    data.network_summary.domains.sort();
+    data.network_summary.domains.dedup();
+    data.network_summary.protocols.sort();
+    data.network_summary.protocols.dedup();
 
     // check for /root access
     for access in data.file_events.iter() {
         let Some(name) = &access.file_name else {
             continue;
         };
-        let root_dir_regex = regex::Regex::new(r"^/root/").unwrap();
+        let root_dir_regex = regex::Regex::new(r"^/root/|/bin/").unwrap();
         if root_dir_regex.is_match(&name.to_string_lossy()) {
             data.alerts.push(Alert {
                 severity: 0,
-                message: String::from("Root infiltration detected!"),
+                message: String::from("Critical: Root infiltration detected!"),
             })
         }
     }
     if data.file_summary.behavior.system.write {
         data.alerts.push(Alert {
             severity: 1,
-            message: String::from("Attempting to write into system"),
+            message: String::from("Urgent: Attempting to write into system"),
         });
-    }
-    if data.file_summary.behavior.current_dir.execute {
+    } else if data.file_summary.behavior.current_dir.execute {
         data.alerts.push(Alert {
             severity: 1,
-            message: String::from("Attempting to execute in current directory"),
+            message: String::from("Warning: Attempting to execute in current directory"),
         });
-    }
-    if data.file_summary.behavior.home_dir.execute || data.file_summary.behavior.runtime.execute {
+    } else if data.file_summary.behavior.home_dir.execute
+        || data.file_summary.behavior.runtime.execute
+    {
         data.alerts.push(Alert {
             severity: 2,
-            message: String::from("Attempting to execute from non-system directory"),
+            message: String::from("Caution: Attempting to execute from non-system directory"),
         });
-    }
-    if data.file_summary.behavior.runtime.write || data.file_summary.behavior.runtime.read {
+    } else if data.file_summary.behavior.runtime.write || data.file_summary.behavior.runtime.read {
         data.alerts.push(Alert {
             severity: 3,
-            message: String::from("Unexpected access of runtime directories"),
+            message: String::from("Note: Unexpected access of runtime directories"),
+        });
+    } else {
+        data.alerts.push(Alert {
+            severity: 4,
+            message: String::from("No suspicious activity detected"),
         });
     }
-
     *shared_state.lock().await = Some(data);
     done_notifier.notify_waiters();
     Ok(())

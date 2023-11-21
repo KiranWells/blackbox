@@ -145,7 +145,7 @@ pub struct TraceEvent {
 
 /// The access type for a file or directory; whether it was read, written to, or executed.
 /// Similar to the Unix file permissions, but for a specific file.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct AccessType {
     pub read: bool,
     pub write: bool,
@@ -155,7 +155,7 @@ pub struct AccessType {
 //  TODO(ui): add a warning in the UI that shows to the user if there is something bad
 /// A process's overall file behavior in relation to various
 /// important system path categories.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct FileBehavior {
     /// The behavior of the process with respect to stdin, stdout, and stderr.
     pub stdio: AccessType,
@@ -182,7 +182,7 @@ pub struct FileBehavior {
 }
 
 /// A summary of the file accesses: information as to the amount of accesses, bytes written/read, as well directories and overall behavior
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FileSummary {
     /// number of accesses
     pub access_count: u64,
@@ -198,15 +198,16 @@ pub struct FileSummary {
 
 /// The domain of the connection when created from a socket.
 /// Other includes unix sockets, netlink, and raw sockets.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ConnectionDomain {
     IPv4,
     IPv6,
     Other,
 }
 
+#[allow(clippy::upper_case_acronyms)]
 /// The protocol of the connection when created from a socket.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ConnectionProtocol {
     // TODO(processing): ICMP?
     TCP,
@@ -215,7 +216,7 @@ pub enum ConnectionProtocol {
 }
 
 ///General summary of the connection, including the start and endtime for each connection, as well the domain and protocol
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Connection {
     /// the monotonic timestamp when the processs first began
     pub start_time: u64,
@@ -226,10 +227,10 @@ pub struct Connection {
 }
 
 /// A summary of the process's other pawned processes
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ProcessSummary {
     /// the programs executed by the process
-    pub programs: Vec<Option<OsString>>,
+    pub programs: Vec<OsString>,
     /// the number of other processes spawned by the process, including forks
     pub processes_created: u32,
     /// the most common spawn type of the process
@@ -238,7 +239,7 @@ pub struct ProcessSummary {
 
 /// A summary of the network accesses: information as to the number of
 /// connections, domains, and protocols used by the process
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct NetworkSummary {
     /// number of connections created by the process
     pub connection_count: u64,
@@ -272,7 +273,7 @@ pub struct SpawnEvent {
 }
 
 /// The total sum of the data collected from the tracing and processing stages
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ProcessingData {
     pub file_summary: FileSummary,
     pub file_events: Vec<FileAccess>,
@@ -286,7 +287,7 @@ pub struct ProcessingData {
 }
 
 /// An alert indicating a potential security issue, such as writing to root directory.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Alert {
     /// The severity of the alert; lower is more severe
     pub severity: u8,
@@ -351,5 +352,50 @@ impl AccessType {
         self.read |= other.read;
         self.write |= other.write;
         self.execute |= other.execute;
+    }
+}
+
+impl ConnectionDomain {
+    pub fn text(self) -> String {
+        format!("{:?}", self)
+    }
+
+    pub fn tooltip(self) -> String {
+        match self {
+            ConnectionDomain::IPv4 => String::from("IP version 4"),
+            ConnectionDomain::IPv6 => String::from("IP version 6"),
+            ConnectionDomain::Other => {
+                String::from("Another domain, such as raw sockets or unix domains")
+            }
+        }
+    }
+}
+
+impl ConnectionProtocol {
+    pub fn text(self) -> String {
+        format!("{:?}", self)
+    }
+
+    pub fn tooltip(self) -> String {
+        match self {
+            ConnectionProtocol::TCP => String::from("Transmission Control Protocol"),
+            ConnectionProtocol::UDP => String::from("User Datagram Protocol"),
+            ConnectionProtocol::Other => String::from("Another protocol such as raw sockets"),
+        }
+    }
+}
+
+impl SpawnType {
+    pub fn text(self) -> String {
+        format!("{:?}", self)
+    }
+
+    pub fn tooltip(self) -> String {
+        match self {
+            SpawnType::Fork => String::from("This process was spawned by forking"),
+            SpawnType::Exec => {
+                String::from("This process was spawned by executing another command")
+            }
+        }
     }
 }

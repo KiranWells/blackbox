@@ -1,8 +1,14 @@
 mod processing;
 mod tracing;
 mod types;
+mod ui;
 
-use std::{fs::OpenOptions, path::PathBuf, process::Command, sync::Arc};
+use std::{
+    fs::OpenOptions,
+    path::{Path, PathBuf},
+    process::Command,
+    sync::Arc,
+};
 
 use clap::Parser;
 use color_eyre::eyre::Result;
@@ -35,7 +41,14 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    env_logger::init();
+    let log_file = OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .create(true)
+        .open(Path::new("blackbox.log"))?;
+    env_logger::builder()
+        .target(env_logger::Target::Pipe(Box::new(log_file)))
+        .init();
     color_eyre::install()?;
 
     let args = Args::parse();
@@ -70,8 +83,8 @@ async fn main() -> Result<()> {
 
     // create message queue
     let (tx, rx) = tokio::sync::mpsc::channel(100);
-
-    let done_wait: Arc<Notify> = Arc::new(Notify::new());
+    // let (progress_tx, progress_rx) = tokio::sync::mpsc::channel(10);
+    let done_wait = Arc::new(Notify::new());
     let shared_state: Arc<Mutex<Option<ProcessingData>>> = Arc::new(Mutex::new(None));
 
     // spawn the processes in parallel
@@ -84,7 +97,7 @@ async fn main() -> Result<()> {
     ));
 
     // display info to UI
-    // TODO
+    ui::run(done_wait, shared_state)?;
 
     // wait for both processes; we only care about errors
     let _ = tokio::try_join!(tracing_job, processing_job)?;

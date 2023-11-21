@@ -24,6 +24,7 @@ color-eyre = "0.6.2"
 bytes = "1.5.0"
 nix = { version = "0.27.1", features = ["process", "fs", "socket"] }
 futures = "0.3.29"
+iced = { version = "0.10.0", features = ["tokio", "svg"] }
 regex = "1.10.2"
 
 [[bin]]
