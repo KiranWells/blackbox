@@ -198,7 +198,7 @@ pub struct FileSummary {
 
 /// The domain of the connection when created from a socket.
 /// Other includes unix sockets, netlink, and raw sockets.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ConnectionDomain {
     IPv4,
     IPv6,
@@ -207,7 +207,7 @@ pub enum ConnectionDomain {
 
 #[allow(clippy::upper_case_acronyms)]
 /// The protocol of the connection when created from a socket.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ConnectionProtocol {
     // TODO(processing): ICMP?
     TCP,
@@ -397,13 +397,5 @@ impl SpawnType {
                 String::from("This process was spawned by executing another command")
             }
         }
-    }
-}
-
-impl AccessType {
-    pub fn update(&mut self, other: &Self) {
-        self.read |= other.read;
-        self.write |= other.write;
-        self.execute |= other.execute;
     }
 }

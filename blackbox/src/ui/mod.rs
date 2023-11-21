@@ -413,6 +413,8 @@ impl App {
                     )
                     .spacing(3)
                 )
+                .height(100)
+                .width(Length::Fill)
             ]
             .spacing(10.0),
         ]
