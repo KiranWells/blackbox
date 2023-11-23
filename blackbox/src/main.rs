@@ -12,6 +12,7 @@ use std::{
 
 use clap::Parser;
 use color_eyre::eyre::Result;
+use log::warn;
 use tokio::sync::{Mutex, Notify};
 use types::ProcessingData;
 
@@ -79,7 +80,28 @@ async fn main() -> Result<()> {
         let stdin = OpenOptions::new().read(true).open(stdin.as_path())?;
         command.stdin(stdin);
     }
-    let child = command.spawn()?;
+    let mut child = command.spawn()?;
+
+    let wait_result = unsafe {
+        nix::libc::waitpid(
+            child.id() as i32,
+            std::ptr::null_mut(),
+            nix::libc::WUNTRACED,
+        )
+    };
+
+    if wait_result != child.id() as i32 {
+        warn!("WaitPID did not exit correctly!")
+    }
+
+    // we are really interested in the child of `su`, so we need to get its PID
+    let children_file = format!("/proc/{0}/task/{0}/children", child.id());
+    let children = std::fs::read_to_string(children_file).unwrap();
+    let child_pid = children
+        .strip_suffix(' ')
+        .unwrap()
+        .parse::<u32>()
+        .expect("expected a single valid PID");
 
     // create message queue
     let (tx, rx) = tokio::sync::mpsc::channel(100);
@@ -89,7 +111,7 @@ async fn main() -> Result<()> {
 
     // spawn the processes in parallel
     // the child of su will be one pid greater, unless there is an extreme race condition
-    let tracing_job = tokio::spawn(tracing::start_tracing(child.id() + 1, tx));
+    let tracing_job = tokio::spawn(tracing::start_tracing(child_pid, tx));
     let processing_job = tokio::spawn(processing::start_processing(
         rx,
         Arc::clone(&done_wait),
@@ -98,6 +120,7 @@ async fn main() -> Result<()> {
 
     // display info to UI
     ui::run(done_wait, shared_state)?;
+    child.kill()?;
 
     // wait for both processes; we only care about errors
     let _ = tokio::try_join!(tracing_job, processing_job)?;

@@ -41,7 +41,7 @@ pub fn run(
 ) -> Result<()> {
     App::run(Settings {
         flags: Flags { done, shared_state },
-        id: None,
+        id: Some("Blackbox".to_string()),
         window: Default::default(),
         default_font: {
             Font {
@@ -154,7 +154,7 @@ impl Application for App {
                 .into_iter()
                 .map(|tab| {
                     button(text(format!("{:?}", tab)).font(Font {
-                        weight: Weight::Semibold,
+                        weight: Weight::Bold,
                         ..Default::default()
                     }))
                     .on_press(Message::SwitchTab(tab))
@@ -672,7 +672,7 @@ fn monospace(t: impl ToString) -> Element<'static> {
 fn chip(t: impl ToString, tip: impl ToString) -> Element<'static> {
     tooltip(
         container(text(t).size(12).font(Font {
-            weight: Weight::Semibold,
+            weight: Weight::Bold,
             ..Default::default()
         }))
         .style(ContainerType::Card(25.0))

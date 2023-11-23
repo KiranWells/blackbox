@@ -1,4 +1,5 @@
 use color_eyre::eyre::Result;
+use log::warn;
 use nix::sys::socket::{AddressFamily, SockProtocol};
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -20,8 +21,7 @@ pub async fn start_processing(
     shared_state: Arc<Mutex<Option<ProcessingData>>>,
 ) -> Result<()> {
     // collect trace events into hashmap
-    let mut file_hash: HashMap<i32, Vec<TraceEvent>> = HashMap::new(); //Map each event to their File_Descriptor (Same File)
-    let mut connection_hash: HashMap<i32, Vec<TraceEvent>> = HashMap::new(); // Map each connection to their fd
+    let mut file_hash: HashMap<i32, Vec<TraceEvent>> = HashMap::new(); // Map each event to their File_Descriptor (Same File)
     let mut spawns: Vec<TraceEvent> = vec![];
     let mut data = ProcessingData::default();
     while let Some(i) = rx.recv().await {
@@ -56,14 +56,14 @@ pub async fn start_processing(
                 file_descriptor, ..
             }) => {
                 if let Ok(fd) = file_descriptor {
-                    let list = connection_hash.entry(fd).or_insert(vec![]);
+                    let list = file_hash.entry(fd).or_insert(vec![]);
                     list.push(i);
                 }
             }
             Shutdown(ShutdownData {
                 file_descriptor, ..
             }) => {
-                let list = connection_hash.entry(file_descriptor).or_insert(vec![]);
+                let list = file_hash.entry(file_descriptor).or_insert(vec![]);
                 list.push(i);
             }
             Fork(ForkData { .. }) => spawns.push(i),
@@ -71,6 +71,7 @@ pub async fn start_processing(
             Exit(ExitData { .. }) => {
                 // the process is done
                 // TODO: handle async events sent after this point
+                println!("exiting");
                 break;
             }
             Unhandled(UnhandledSyscallData { syscall_id, .. }) => {
@@ -94,6 +95,13 @@ pub async fn start_processing(
             error_count: 0,
             access_type: AccessType::default(),
         };
+        let mut conn = Connection {
+            domain: ConnectionDomain::Other,
+            protocol: crate::types::ConnectionProtocol::Other,
+            start_time: 0,
+            end_time: 0,
+        };
+        let mut conn_fd = -1;
 
         for event in value {
             match event.clone().data {
@@ -166,46 +174,38 @@ pub async fn start_processing(
                 Close(CloseData {
                     file_descriptor, ..
                 }) => {
-                    fa.file_descriptor = file_descriptor;
-                    fa.end_time = event.monotonic_exit_timestamp;
-                    // finalize fileaccess
-                    data.file_events.push(fa.clone());
-                    // clear fa data
-                    fa.data_length = 0;
-                    fa.file_descriptor = -1;
-                    fa.start_time = 0;
-                    fa.end_time = 0;
-                    fa.error_count = 0;
-                    fa.file_name.take();
-                    fa.read_data.clear();
-                    fa.write_data.clear();
-                    fa.access_type = AccessType::default();
+                    if fa.file_descriptor == file_descriptor || file_descriptor < 3 {
+                        fa.file_descriptor = file_descriptor;
+                        fa.end_time = event.monotonic_exit_timestamp;
+                        // finalize fileaccess
+                        data.file_events.push(fa.clone());
+                        // clear fa data
+                        fa.data_length = 0;
+                        fa.file_descriptor = -1;
+                        fa.start_time = 0;
+                        fa.end_time = 0;
+                        fa.error_count = 0;
+                        fa.file_name.take();
+                        fa.read_data.clear();
+                        fa.write_data.clear();
+                        fa.access_type = AccessType::default();
+                    } else if conn_fd == file_descriptor {
+                        conn.end_time = event.monotonic_exit_timestamp;
+                        data.network_events.push(conn.clone());
+                        conn_fd = -1;
+                    } else {
+                        // we are missing something, these are not stdio
+                        warn!("File descriptor not matched in close! {file_descriptor}");
+                    }
                 }
-                _ => unreachable!(),
-            }
-        }
-    }
-    for (_, mut value) in connection_hash {
-        // begin processing all events
-        // sort value by monotonic time
-        value.sort_by(|a, b| a.monotonic_exit_timestamp.cmp(&b.monotonic_exit_timestamp));
-
-        let mut conn = Connection {
-            domain: ConnectionDomain::Other,
-            protocol: crate::types::ConnectionProtocol::Other,
-            start_time: 0,
-            end_time: 0,
-        };
-
-        for event in value {
-            match event.clone().data {
                 Socket(SocketData {
                     file_descriptor,
                     domain,
                     r#type: _,
                     protocol,
                 }) => {
-                    if file_descriptor.is_ok() {
+                    if let Ok(file_descriptor) = file_descriptor {
+                        conn_fd = file_descriptor;
                         // conn.protocol = match SockType::try_from(r#type) {
                         //     Ok(SockType::Stream) => ConnectionProtocol::TCP,
                         //     Ok(SockType::Datagram) => ConnectionProtocol::UDP,
@@ -346,24 +346,26 @@ pub async fn start_processing(
             severity: 1,
             message: String::from("Urgent: Attempting to write into system"),
         });
-    } else if data.file_summary.behavior.current_dir.execute {
+    }
+    if data.file_summary.behavior.current_dir.execute {
         data.alerts.push(Alert {
             severity: 1,
             message: String::from("Warning: Attempting to execute in current directory"),
         });
-    } else if data.file_summary.behavior.home_dir.execute
-        || data.file_summary.behavior.runtime.execute
-    {
+    }
+    if data.file_summary.behavior.home_dir.execute || data.file_summary.behavior.runtime.execute {
         data.alerts.push(Alert {
             severity: 2,
             message: String::from("Caution: Attempting to execute from non-system directory"),
         });
-    } else if data.file_summary.behavior.runtime.write || data.file_summary.behavior.runtime.read {
+    }
+    if data.file_summary.behavior.runtime.write || data.file_summary.behavior.runtime.read {
         data.alerts.push(Alert {
             severity: 3,
             message: String::from("Note: Unexpected access of runtime directories"),
         });
-    } else {
+    }
+    if data.alerts.is_empty() {
         data.alerts.push(Alert {
             severity: 4,
             message: String::from("No suspicious activity detected"),

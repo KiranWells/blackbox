@@ -183,10 +183,10 @@ pub async fn start_tracing(pid: u32, tx: tokio::sync::mpsc::Sender<TraceEvent>) 
     // start the traced process
     unsafe { nix::libc::kill(pid as i32, Signal::SIGCONT as i32) };
 
-    tokio::spawn(async move {
-        tokio::signal::ctrl_c().await.unwrap();
-        unsafe { nix::libc::kill(pid as i32, Signal::SIGINT as i32) };
-    });
+    // tokio::spawn(async move {
+    //     tokio::signal::ctrl_c().await.unwrap();
+    //     unsafe { nix::libc::kill(pid as i32, Signal::SIGINT as i32) };
+    // });
     if let Some(result) = handles.try_next().await? {
         info!("detaching!");
         detach_action(&mut bpf)?;
@@ -207,8 +207,8 @@ async fn send_event(
     tx: &tokio::sync::mpsc::Sender<TraceEvent>,
     start_time: Option<u64>,
 ) -> Result<bool> {
-    let entry = &syscall.enter_args.as_ref().unwrap();
-    let exit = &syscall.exit_args.as_ref();
+    let entry = syscall.enter_args.as_ref().unwrap();
+    let exit = syscall.exit_args.as_ref();
     {
         if let Some(timestamp) = start_time {
             if entry.timestamp < timestamp {
@@ -222,8 +222,14 @@ async fn send_event(
 
     if let Some(exit) = exit {
         if entry.timestamp > exit.timestamp {
-            error!("Received incorrect event: enter after exit! ");
-            return Ok(false);
+            if entry.syscall_id == SyscallID::Execve as u64
+                || entry.syscall_id == SyscallID::ExecveAt as u64
+            {
+                info!("execve with timing anomaly");
+            } else {
+                error!("Received incorrect event: enter after exit!\n{:?}", syscall);
+                return Ok(false);
+            }
         }
     }
 

@@ -60,7 +60,9 @@ pub fn filename_handler(
     ctx: &RawTracePointContext,
     mut event: SyscallEvent,
 ) -> Result<u128, EbpfError> {
-    let ptr = if event.syscall_id == SyscallID::OpenAt as u64 || event.syscall_id == SyscallID::ExecveAt as u64 {
+    let ptr = if event.syscall_id == SyscallID::OpenAt as u64
+        || event.syscall_id == SyscallID::ExecveAt as u64
+    {
         event.arg_1 as *const u8
     } else {
         // open or creat or execve
@@ -95,7 +97,7 @@ fn read_bytes_and_send(
     let dest = unsafe { core::slice::from_raw_parts_mut(buf_ptr, limited_length) };
 
     unsafe {
-        bpf_probe_read_user_buf(ptr, dest).map_err(|_| EbpfError::Read)?;
+        bpf_probe_read_user_buf(ptr, dest).map_err(|_| EbpfError::Read(Some(syscall_id)))?;
     };
     unsafe {
         BUFFER_OUTPUT.output(ctx, data_buffer, 0);
@@ -121,8 +123,9 @@ fn read_string_and_send(
     let buf_ptr = data_buffer.data_buffer.as_mut_ptr();
 
     let dest = unsafe { core::slice::from_raw_parts_mut(buf_ptr, BUFFER_SIZE) };
-    let result_slice =
-        unsafe { bpf_probe_read_user_str_bytes(ptr, dest).map_err(|_| EbpfError::Read)? };
+    let result_slice = unsafe {
+        bpf_probe_read_user_str_bytes(ptr, dest).map_err(|_| EbpfError::Read(Some(syscall_id)))?
+    };
 
     if !result_slice.is_empty() {
         unsafe {
