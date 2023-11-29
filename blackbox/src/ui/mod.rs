@@ -258,6 +258,8 @@ impl App {
     }
 
     fn file_view(data: &ProcessingData) -> Element<'_> {
+        let mut sorted_files = data.file_events.clone();
+        sorted_files.sort_by(|a, b| a.start_time.cmp(&b.start_time));
         column![
             header("Summary:"),
             container(Self::create_file_summary(&data.file_summary))
@@ -265,13 +267,7 @@ impl App {
                 .style(ContainerType::SubtleCard(10.0)),
             header("File Access Details:"),
             scrollable(
-                column(
-                    data.file_events
-                        .iter()
-                        .map(Self::create_file_event)
-                        .collect()
-                )
-                .spacing(10.0)
+                column(sorted_files.iter().map(Self::create_file_event).collect()).spacing(10.0)
             ),
         ]
         .into()
@@ -463,37 +459,40 @@ impl App {
     }
 
     fn create_process_summary(process_summary: &ProcessSummary) -> Element<'static> {
-        column![
-            text(format!(
-                "Total Processes Spawned: {}",
-                process_summary.processes_created,
-            )),
-            row![
-                text("Most Common Spawn Type:"),
-                chip(
-                    process_summary.most_common_spawn_type.text(),
-                    process_summary.most_common_spawn_type.tooltip()
-                )
-            ]
-            .spacing(5),
-            row![
-                text("Processes executed:"),
-                scrollable(
-                    column(
-                        process_summary
-                            .programs
-                            .iter()
-                            .map(|program| monospace(program.to_string_lossy()))
-                            .collect()
+        if process_summary.processes_created == 0 {
+            text("No other processes created").into()
+        } else {
+            column![
+                text(format!(
+                    "Total Processes Spawned: {}",
+                    process_summary.processes_created,
+                )),
+                row![
+                    text("Most Common Spawn Type:"),
+                    chip(
+                        process_summary.most_common_spawn_type.text(),
+                        process_summary.most_common_spawn_type.tooltip()
                     )
-                    .spacing(5)
-                ),
+                ]
+                .spacing(5),
+                row![
+                    text("Processes executed:"),
+                    scrollable(
+                        column(
+                            process_summary
+                                .programs
+                                .iter()
+                                .map(|program| monospace(program.to_string_lossy()))
+                                .collect()
+                        )
+                        .spacing(5)
+                    ),
+                ]
+                .spacing(10)
             ]
-            .spacing(10)
-            .align_items(iced::Alignment::Center),
-        ]
-        .spacing(3)
-        .into()
+            .spacing(3)
+            .into()
+        }
     }
 
     fn create_file_event(access: &FileAccess) -> Element<'static> {

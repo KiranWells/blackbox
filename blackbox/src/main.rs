@@ -63,10 +63,15 @@ async fn main() -> Result<()> {
 
     command
         .arg(args.user)
+        .arg("--login")
         .arg("--shell")
         .arg("/bin/sh")
         .arg("--command")
-        .arg(format!("kill -STOP $$; exec {}", args.command))
+        .arg(format!(
+            "cd {}; kill -STOP $$; exec {}",
+            std::env::current_dir()?.to_string_lossy(),
+            args.command
+        ))
         .stderr(stderr);
     if let Some(stdout) = args.stdout_file.clone() {
         let stdout = OpenOptions::new()

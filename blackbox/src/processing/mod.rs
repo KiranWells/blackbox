@@ -329,17 +329,32 @@ pub async fn start_processing(
     data.network_summary.protocols.dedup();
 
     // check for /root access
+    let mut accessed_root = false;
+    let mut suspicious_searching = false;
+    let suspicious_regex = regex::Regex::new(r"\.[^/]+_history|^/etc/passwd$|\.aws/").unwrap();
+    let root_dir_regex = regex::Regex::new(r"^/root").unwrap();
     for access in data.file_events.iter() {
         let Some(name) = &access.file_name else {
             continue;
         };
-        let root_dir_regex = regex::Regex::new(r"^/root/|/bin/").unwrap();
         if root_dir_regex.is_match(&name.to_string_lossy()) {
-            data.alerts.push(Alert {
-                severity: 0,
-                message: String::from("Critical: Root infiltration detected!"),
-            })
+            accessed_root = true;
         }
+        if suspicious_regex.is_match(&name.to_string_lossy()) {
+            suspicious_searching = true;
+        }
+    }
+    if suspicious_searching {
+        data.alerts.push(Alert {
+            severity: 1,
+            message: String::from("Urgent: Suspicious files read; this could be data exfiltration"),
+        })
+    }
+    if accessed_root {
+        data.alerts.push(Alert {
+            severity: 0,
+            message: String::from("Critical: Root infiltration detected!"),
+        })
     }
     if data.file_summary.behavior.system.write {
         data.alerts.push(Alert {

@@ -211,7 +211,7 @@ async fn send_event(
     let exit = syscall.exit_args.as_ref();
     {
         if let Some(timestamp) = start_time {
-            if entry.timestamp < timestamp {
+            if entry.timestamp <= timestamp {
                 return Ok(false);
             }
         } else {
