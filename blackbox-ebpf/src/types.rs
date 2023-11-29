@@ -12,8 +12,9 @@ use blackbox_common::SyscallEvent;
 /// A general error enum for error handling
 #[derive(Clone, Copy)]
 pub enum EbpfError {
-    /// Should be used when reading from memory. Contains the syscall id
-    Read(Option<u64>),
+    /// Should be used when reading from memory. Contains the error returned from the read
+    /// operation
+    Read(i64),
     /// Should be used when extracting arguments from registers
     Arg(usize),
     /// Should only be used where it guarantees a logic error occurred, such as where you would
@@ -26,13 +27,9 @@ pub enum EbpfError {
 impl EbpfError {
     pub fn log(self, ctx: &RawTracePointContext) {
         match self {
-            EbpfError::Read(id) => match id {
-                Some(id) => error!(
-                    ctx,
-                    "Failed to read address in eBPF handler from syscall {}", id
-                ),
-                None => error!(ctx, "Failed to read address in eBPF handler"),
-            },
+            EbpfError::Read(errno) => {
+                error!(ctx, "Failed to read address in eBPF handler: {}", errno)
+            }
             EbpfError::Arg(v) => {
                 error!(ctx, "Failed to extract arg number {}", v);
             }
@@ -56,12 +53,11 @@ impl TryFrom<&RawTracePointContext> for SysEnterCtx {
     type Error = EbpfError;
     fn try_from(ctx: &RawTracePointContext) -> Result<Self, Self::Error> {
         let pt_regs_ptr = unsafe {
-            bpf_probe_read_kernel(ctx.as_ptr() as *const *mut pt_regs)
-                .map_err(|_| EbpfError::Read(None))
+            bpf_probe_read_kernel(ctx.as_ptr() as *const *mut pt_regs).map_err(EbpfError::Read)
         }?;
 
         let address = unsafe { (ctx.as_ptr() as *const c_ulong).offset(1) };
-        let id = unsafe { bpf_probe_read_kernel(address).map_err(|_| EbpfError::Read(None)) }?;
+        let id = unsafe { bpf_probe_read_kernel(address).map_err(EbpfError::Read) }?;
         Ok(Self {
             regs: pt_regs_ptr,
             id,
@@ -96,16 +92,14 @@ impl TryFrom<&RawTracePointContext> for SysExitCtx {
     type Error = EbpfError;
     fn try_from(ctx: &RawTracePointContext) -> Result<Self, Self::Error> {
         let pt_regs_ptr = unsafe {
-            bpf_probe_read_kernel(ctx.as_ptr() as *const *mut pt_regs)
-                .map_err(|_| EbpfError::Read(None))
+            bpf_probe_read_kernel(ctx.as_ptr() as *const *mut pt_regs).map_err(EbpfError::Read)
         }?;
 
-        let id =
-            unsafe { bpf_probe_read(&(*pt_regs_ptr).orig_rax).map_err(|_| EbpfError::Read(None))? }
-                as c_ulong;
+        let id = unsafe { bpf_probe_read(&(*pt_regs_ptr).orig_rax).map_err(EbpfError::Read)? }
+            as c_ulong;
 
         let address = unsafe { (ctx.as_ptr() as *const c_ulong).offset(1) };
-        let ret = unsafe { bpf_probe_read_kernel(address).map_err(|_| EbpfError::Read(None)) }?;
+        let ret = unsafe { bpf_probe_read_kernel(address).map_err(EbpfError::Read) }?;
         Ok(Self {
             regs: pt_regs_ptr,
             id,
@@ -132,7 +126,7 @@ impl SysExitCtx {
     /// gets a function return value from the arguments
     pub fn ret(&self) -> Result<c_ulong, EbpfError> {
         let ctx = unsafe { &*self.regs };
-        unsafe { bpf_probe_read(&ctx.rax).map_err(|_| EbpfError::Read(None)) }
+        unsafe { bpf_probe_read(&ctx.rax).map_err(EbpfError::Read) }
     }
 }
 

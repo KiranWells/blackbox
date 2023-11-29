@@ -64,7 +64,7 @@ async fn main() -> Result<()> {
     command
         .arg(args.user)
         .arg("--shell")
-        .arg("/bin/bash")
+        .arg("/bin/sh")
         .arg("--command")
         .arg(format!("kill -STOP $$; exec {}", args.command))
         .stderr(stderr);

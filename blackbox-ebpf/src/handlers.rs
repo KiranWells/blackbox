@@ -33,7 +33,13 @@ pub fn sys_read_write_handler(
             NonZeroUsize::new(ret as usize)
         }
     };
-    let length = length.map(|l| unsafe { NonZeroUsize::new_unchecked(BUFFER_SIZE.min(l.get())) });
+    let mut length =
+        length.map(|l| unsafe { NonZeroUsize::new_unchecked(BUFFER_SIZE.min(l.get())) });
+    let data_ptr = event.arg_1 as *const u8;
+
+    if data_ptr.is_null() {
+        length = None;
+    }
 
     event.data_size = length;
 
@@ -97,7 +103,7 @@ fn read_bytes_and_send(
     let dest = unsafe { core::slice::from_raw_parts_mut(buf_ptr, limited_length) };
 
     unsafe {
-        bpf_probe_read_user_buf(ptr, dest).map_err(|_| EbpfError::Read(Some(syscall_id)))?;
+        bpf_probe_read_user_buf(ptr, dest).map_err(EbpfError::Read)?;
     };
     unsafe {
         BUFFER_OUTPUT.output(ctx, data_buffer, 0);
@@ -111,6 +117,9 @@ fn read_string_and_send(
     event_id: EventID,
     syscall_id: u64,
 ) -> Result<Option<NonZeroUsize>, EbpfError> {
+    if ptr.is_null() {
+        return Ok(None);
+    }
     let data_buffer = unsafe {
         let ptr = DATA_BUFFER.get_ptr_mut(0).ok_or(EbpfError::Map)?;
         &mut *ptr
@@ -123,9 +132,8 @@ fn read_string_and_send(
     let buf_ptr = data_buffer.data_buffer.as_mut_ptr();
 
     let dest = unsafe { core::slice::from_raw_parts_mut(buf_ptr, BUFFER_SIZE) };
-    let result_slice = unsafe {
-        bpf_probe_read_user_str_bytes(ptr, dest).map_err(|_| EbpfError::Read(Some(syscall_id)))?
-    };
+    let result_slice =
+        unsafe { bpf_probe_read_user_str_bytes(ptr, dest).map_err(EbpfError::Read)? };
 
     if !result_slice.is_empty() {
         unsafe {
