@@ -63,7 +63,7 @@ int main(int argc, char** argv) {
 
   // process testing
   printf("Process testing ...\n");
-  if (fork() == 0) {
+  if (fork() != 0) {
     // child
     execve("/bin/ls", NULL, NULL);
   }

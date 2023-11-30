@@ -322,6 +322,12 @@ async fn send_event(
                 r => Err(r as i32),
             },
         }),
+        SyscallID::Clone => SyscallData::Fork(ForkData {
+            pid: match syscall.get_return() {
+                r if r as i32 > 0 => Ok(r as u32),
+                r => Err(r as i32),
+            },
+        }),
         SyscallID::Fork => SyscallData::Fork(ForkData {
             pid: match syscall.get_return() {
                 r if r as i32 > 0 => Ok(r as u32),
