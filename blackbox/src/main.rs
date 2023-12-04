@@ -5,6 +5,7 @@ mod ui;
 
 use std::{
     fs::OpenOptions,
+    io::Write,
     path::{Path, PathBuf},
     process::Command,
     sync::Arc,
@@ -38,6 +39,14 @@ struct Args {
     /// File to read the process's stdin from
     #[arg(short = 'e', long, default_value = "stderr.dat")]
     stderr_file: PathBuf,
+    /// File to write system call events to in JSON format. If this is set, no UI will be started;
+    /// only tracing will occur.
+    #[arg(short, long, default_value=None)]
+    file_to_write: Option<PathBuf>,
+    /// Include the initial execve of the program being traced. This is turned off by default to
+    /// make the output more intuitive.
+    #[arg(long, action = clap::ArgAction::SetTrue)]
+    include_initial_execve: bool,
 }
 
 #[tokio::main]
@@ -109,25 +118,46 @@ async fn main() -> Result<()> {
         .expect("expected a single valid PID");
 
     // create message queue
-    let (tx, rx) = tokio::sync::mpsc::channel(100);
+    let (tx, mut rx) = tokio::sync::mpsc::channel(100);
     // let (progress_tx, progress_rx) = tokio::sync::mpsc::channel(10);
     let done_wait = Arc::new(Notify::new());
     let shared_state: Arc<Mutex<Option<ProcessingData>>> = Arc::new(Mutex::new(None));
 
     // spawn the processes in parallel
     // the child of su will be one pid greater, unless there is an extreme race condition
-    let tracing_job = tokio::spawn(tracing::start_tracing(child_pid, tx));
-    let processing_job = tokio::spawn(processing::start_processing(
-        rx,
-        Arc::clone(&done_wait),
-        Arc::clone(&shared_state),
+    let tracing_job = tokio::spawn(tracing::start_tracing(
+        child_pid,
+        tx,
+        args.include_initial_execve,
     ));
 
-    // display info to UI
-    ui::run(done_wait, shared_state)?;
-    child.kill()?;
+    if args.file_to_write.is_none() {
+        let processing_job = tokio::spawn(processing::start_processing(
+            rx,
+            Arc::clone(&done_wait),
+            Arc::clone(&shared_state),
+        ));
 
-    // wait for both processes; we only care about errors
-    let _ = tokio::try_join!(tracing_job, processing_job)?;
-    Ok(())
+        // display info to UI
+        ui::run(done_wait, shared_state)?;
+        child.kill()?;
+
+        // wait for both processes; we only care about errors
+        let _ = tokio::try_join!(tracing_job, processing_job)?;
+        Ok(())
+    } else {
+        let consumer = tokio::spawn(async move {
+            let mut output_file = OpenOptions::new()
+                .write(true)
+                .truncate(true)
+                .create(true)
+                .open(args.file_to_write.unwrap())?;
+            while let Some(i) = rx.recv().await {
+                write!(output_file, "{}\n", serde_json::to_string(&i)?)?;
+            }
+            Ok::<(), color_eyre::Report>(())
+        });
+        let _ = tokio::try_join!(tracing_job, consumer)?;
+        Ok(())
+    }
 }

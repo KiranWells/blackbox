@@ -4,7 +4,6 @@ use std::mem::size_of;
 use std::os::unix::prelude::OsStringExt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
 
 use aya::maps::perf::AsyncPerfEventArrayBuffer;
 use aya::maps::{Array, AsyncPerfEventArray, MapData};
@@ -23,9 +22,7 @@ use nix::sys::signal::Signal;
 use tokio::select;
 use tokio::sync::mpsc::{self, Sender};
 
-use crate::types::{
-    CloseData, ForkData, OpenData, ReadData, SyscallData, TraceEvent, TracepointType, WriteData,
-};
+use crate::types::{CloseData, ForkData, OpenData, ReadData, SyscallData, TraceEvent, WriteData};
 
 #[derive(Debug)]
 pub struct SyscallBuilder {
@@ -98,9 +95,11 @@ where
     Ok(())
 }
 
-pub async fn start_tracing(pid: u32, tx: tokio::sync::mpsc::Sender<TraceEvent>) -> Result<()> {
-    tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
-
+pub async fn start_tracing(
+    pid: u32,
+    tx: tokio::sync::mpsc::Sender<TraceEvent>,
+    include_initial_execve: bool,
+) -> Result<()> {
     let (mut bpf, detach_action) = init_bpf(pid)?;
     let mut event_output = AsyncPerfEventArray::try_from(bpf.take_map("EVENT_OUTPUT").unwrap())?;
     let mut buffer_output = AsyncPerfEventArray::try_from(bpf.take_map("BUFFER_OUTPUT").unwrap())?;
@@ -136,10 +135,11 @@ pub async fn start_tracing(pid: u32, tx: tokio::sync::mpsc::Sender<TraceEvent>) 
                     if args.syscall_id == SyscallID::Execve as u64 && start_time.is_none() {
                         start_time = Some(args.timestamp);
                     }
-                    if args.syscall_id == SyscallID::Exit as u64 || args.syscall_id == SyscallID::ExitGroup as u64 {
+                    let done = args.syscall_id == SyscallID::Exit as u64 || args.syscall_id == SyscallID::ExitGroup as u64;
+                    events.push(args);
+                    if done {
                         break;
                     }
-                    events.push(args);
                 }
                 Some(buffer) = buffer_rx.recv() => {
                     buffers.insert(buffer.get_event_id(), buffer);
@@ -168,7 +168,7 @@ pub async fn start_tracing(pid: u32, tx: tokio::sync::mpsc::Sender<TraceEvent>) 
             if is_finished {
                 let builder = map.remove(&id).unwrap();
 
-                if send_event(builder, &tx, start_time).await? {
+                if send_event(builder, &tx, start_time, include_initial_execve).await? {
                     done.store(true, Ordering::Release);
                 }
             }
@@ -178,11 +178,10 @@ pub async fn start_tracing(pid: u32, tx: tokio::sync::mpsc::Sender<TraceEvent>) 
         Ok::<(), Report>(())
     }));
 
-    // wait for tracing to initialize
-    tokio::time::sleep(Duration::from_millis(300)).await;
     // start the traced process
     unsafe { nix::libc::kill(pid as i32, Signal::SIGCONT as i32) };
 
+    // This is disabled because it will cause the program to become unkillable if it hangs
     // tokio::spawn(async move {
     //     tokio::signal::ctrl_c().await.unwrap();
     //     unsafe { nix::libc::kill(pid as i32, Signal::SIGINT as i32) };
@@ -206,12 +205,16 @@ async fn send_event(
     syscall: SyscallBuilder,
     tx: &tokio::sync::mpsc::Sender<TraceEvent>,
     start_time: Option<u64>,
+    include_initial_execve: bool,
 ) -> Result<bool> {
     let entry = syscall.enter_args.as_ref().unwrap();
     let exit = syscall.exit_args.as_ref();
     {
         if let Some(timestamp) = start_time {
-            if entry.timestamp <= timestamp {
+            if entry.timestamp < timestamp {
+                return Ok(false);
+            }
+            if entry.timestamp == timestamp && !include_initial_execve {
                 return Ok(false);
             }
         } else {
@@ -370,11 +373,7 @@ async fn send_event(
     let event_to_send = TraceEvent {
         pid: entry.tgid,
         thread_id: entry.pid,
-        tracepoint: if entry.is_enter() {
-            TracepointType::Enter
-        } else {
-            TracepointType::Exit
-        },
+        syscall_id: entry.syscall_id,
         monotonic_enter_timestamp: entry.timestamp,
         // if there is no exit event (e.g. with non-returning functions)
         // then we consider the exection to take no time
