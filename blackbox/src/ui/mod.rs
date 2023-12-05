@@ -7,7 +7,7 @@ use iced::{
     widget::{button, column, container, row, scrollable, svg, text, tooltip, Row, Space},
     Application, Command, Executor, Font, Length, Settings,
 };
-use tokio::sync::{Mutex, Notify};
+use tokio::sync::{Mutex, Semaphore};
 
 use crate::types::{
     AccessType, Connection, FileAccess, FileSummary, NetworkSummary, ProcessSummary,
@@ -36,7 +36,7 @@ impl Executor for CurrentExecutor {
 }
 
 pub fn run(
-    done: Arc<tokio::sync::Notify>,
+    done: Arc<tokio::sync::Semaphore>,
     shared_state: Arc<Mutex<Option<ProcessingData>>>,
 ) -> Result<()> {
     App::run(Settings {
@@ -71,7 +71,7 @@ struct App {
 
 #[derive(Debug)]
 struct Flags {
-    done: Arc<Notify>,
+    done: Arc<Semaphore>,
     shared_state: Arc<Mutex<Option<ProcessingData>>>,
 }
 
@@ -112,7 +112,9 @@ impl Application for App {
                 .map(Message::FontLoaded),
                 Command::perform(
                     async move {
-                        flags.done.notified().await;
+                        // this is being used as a notifier, because the real notifier does not
+                        // remember it there was a notification sent with no waiter
+                        let _ = flags.done.acquire().await.unwrap();
                         Box::new(flags.shared_state.lock().await.take().unwrap())
                     },
                     Message::Done,

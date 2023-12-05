@@ -17,7 +17,7 @@ use crate::types::SyscallData::*;
 
 pub async fn start_processing(
     mut rx: tokio::sync::mpsc::Receiver<TraceEvent>,
-    done_notifier: Arc<tokio::sync::Notify>,
+    done_notifier: Arc<tokio::sync::Semaphore>,
     shared_state: Arc<Mutex<Option<ProcessingData>>>,
 ) -> Result<()> {
     // collect trace events into hashmap
@@ -71,7 +71,6 @@ pub async fn start_processing(
             Exit(ExitData { .. }) => {
                 // the process is done
                 // TODO: handle async events sent after this point
-                println!("exiting");
                 break;
             }
             Unhandled(UnhandledSyscallData { syscall_id, .. }) => {
@@ -387,7 +386,7 @@ pub async fn start_processing(
         });
     }
     *shared_state.lock().await = Some(data);
-    done_notifier.notify_waiters();
+    done_notifier.add_permits(1);
     Ok(())
 }
 
