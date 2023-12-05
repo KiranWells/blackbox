@@ -20,6 +20,8 @@ Blackbox is an eBPF-based process tracing and analysis program for Linux.
 ### Prerequisites
 
 1. Linux; eBPF is not supported on Windows or MacOS. Additionally, a kernel from within the past few years is required.
+   - Note: eBPF may not be en in some virtual machines
+   - Note: the iced GUI library requires certain support in graphics drivers for displaying images. Insufficient drivers may cause the Blackbox logo to display as a solid black box in the UI.
 2. A rust compiler - install with [Rustup](https://rustup.rs/)
 3. The bpf-linker: `cargo install bpf-linker`
 
