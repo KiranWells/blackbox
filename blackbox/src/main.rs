@@ -13,7 +13,7 @@ use std::{
 
 use clap::Parser;
 use color_eyre::eyre::Result;
-use log::warn;
+use log::{debug, warn};
 use tokio::sync::{Mutex, Semaphore};
 use types::ProcessingData;
 
@@ -62,6 +62,17 @@ async fn main() -> Result<()> {
         .target(env_logger::Target::Pipe(Box::new(log_file)))
         .init();
     color_eyre::install()?;
+
+    // Bump the memlock rlimit. This is needed for older kernels that don't use the
+    // new memcg based accounting, see https://lwn.net/Articles/837122/
+    let rlim = nix::libc::rlimit {
+        rlim_cur: nix::libc::RLIM_INFINITY,
+        rlim_max: nix::libc::RLIM_INFINITY,
+    };
+    let ret = unsafe { nix::libc::setrlimit(nix::libc::RLIMIT_MEMLOCK, &rlim) };
+    if ret != 0 {
+        debug!("remove limit on locked memory failed, ret is: {}", ret);
+    }
 
     let mut command = Command::new("/bin/su");
     command
