@@ -1,6 +1,8 @@
 use std::ffi::OsString;
 
-#[derive(Debug, Clone)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpenData {
     /// The file name passed to open. This is Some unless there are errors reading the memory
     // This is an OsString because it may be different binary layout from the String type
@@ -15,7 +17,7 @@ pub struct OpenData {
     pub mode: u32,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReadData {
     pub file_descriptor: i32,
     /// The number of bytes the user requested to be read
@@ -27,7 +29,7 @@ pub struct ReadData {
     pub bytes_read: Result<usize, isize>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WriteData {
     pub file_descriptor: i32,
     /// The number of bytes the user requested to be written
@@ -38,14 +40,14 @@ pub struct WriteData {
     pub bytes_written: Result<usize, isize>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CloseData {
     pub file_descriptor: i32,
     /// Success or the returned error
     pub return_val: Result<(), i32>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SocketData {
     /// See socket(2) for possible values
     pub domain: i32,
@@ -56,7 +58,7 @@ pub struct SocketData {
     pub file_descriptor: Result<i32, i32>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ShutdownData {
     pub file_descriptor: i32,
     /// See shutdown(2) for possible values
@@ -65,13 +67,13 @@ pub struct ShutdownData {
     pub return_val: Result<(), i32>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ForkData {
     /// 0 for the child thread, the child PID for the parent, or the error returned
     pub pid: Result<u32, i32>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExecveData {
     /// the file of the process to execute
     pub filename: Option<OsString>,
@@ -85,14 +87,14 @@ pub struct ExecveData {
     pub flags: Option<i32>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExitData {
     /// The status value returned from the process to the operating sytem.
     /// The value status & 0xFF is returned to the parent process.
     pub status: i32,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UnhandledSyscallData {
     pub syscall_id: u64,
     pub arg_0: u64,
@@ -104,7 +106,7 @@ pub struct UnhandledSyscallData {
     pub return_val: u64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SyscallData {
     Open(OpenData),
     Read(ReadData),
@@ -118,20 +120,14 @@ pub enum SyscallData {
     Unhandled(UnhandledSyscallData),
 }
 
-#[derive(Debug, Clone, Copy)]
-pub enum TracepointType {
-    Enter,
-    Exit,
-}
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TraceEvent {
     /// The process ID, also the thread global ID in kernel space
     pub pid: u32,
     /// The thread ID, also the process ID in kernel space
     pub thread_id: u32,
-    /// Whether the event is an enter or exit
-    pub tracepoint: TracepointType,
+    /// ID of the system call that caused the ID
+    pub syscall_id: u64,
     /// the value returned by bpf_ktime_get_ns: nanoseconds running since boot for the sys_enter
     /// event
     pub monotonic_enter_timestamp: u64,

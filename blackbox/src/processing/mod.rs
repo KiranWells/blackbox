@@ -17,7 +17,7 @@ use crate::types::SyscallData::*;
 
 pub async fn start_processing(
     mut rx: tokio::sync::mpsc::Receiver<TraceEvent>,
-    done_notifier: Arc<tokio::sync::Notify>,
+    done_notifier: Arc<tokio::sync::Semaphore>,
     shared_state: Arc<Mutex<Option<ProcessingData>>>,
 ) -> Result<()> {
     // collect trace events into hashmap
@@ -71,7 +71,12 @@ pub async fn start_processing(
             Exit(ExitData { .. }) => {
                 // the process is done
                 // TODO: handle async events sent after this point
-                println!("exiting");
+
+                // add to lists to close
+                for (_, value) in file_hash.iter_mut() {
+                    value.push(i.clone())
+                }
+
                 break;
             }
             Unhandled(UnhandledSyscallData { syscall_id, .. }) => {
@@ -86,7 +91,7 @@ pub async fn start_processing(
 
         let mut fa = FileAccess {
             file_name: None,
-            file_descriptor: 0,
+            file_descriptor: -1,
             data_length: 0,
             read_data: vec![],
             write_data: vec![],
@@ -196,6 +201,16 @@ pub async fn start_processing(
                     } else {
                         // we are missing something, these are not stdio
                         warn!("File descriptor not matched in close! {file_descriptor}");
+                    }
+                }
+                Exit(_) => {
+                    if fa.file_descriptor != -1 {
+                        fa.end_time = event.monotonic_exit_timestamp;
+                        data.file_events.push(fa.clone());
+                    }
+                    if conn_fd != -1 {
+                        conn.end_time = event.monotonic_exit_timestamp;
+                        data.network_events.push(conn.clone());
                     }
                 }
                 Socket(SocketData {
@@ -329,17 +344,32 @@ pub async fn start_processing(
     data.network_summary.protocols.dedup();
 
     // check for /root access
+    let mut accessed_root = false;
+    let mut suspicious_searching = false;
+    let suspicious_regex = regex::Regex::new(r"\.[^/]+_history|^/etc/passwd$|\.aws/").unwrap();
+    let root_dir_regex = regex::Regex::new(r"^/root").unwrap();
     for access in data.file_events.iter() {
         let Some(name) = &access.file_name else {
             continue;
         };
-        let root_dir_regex = regex::Regex::new(r"^/root/|/bin/").unwrap();
         if root_dir_regex.is_match(&name.to_string_lossy()) {
-            data.alerts.push(Alert {
-                severity: 0,
-                message: String::from("Critical: Root infiltration detected!"),
-            })
+            accessed_root = true;
         }
+        if suspicious_regex.is_match(&name.to_string_lossy()) {
+            suspicious_searching = true;
+        }
+    }
+    if suspicious_searching {
+        data.alerts.push(Alert {
+            severity: 1,
+            message: String::from("Urgent: Suspicious files read; this could be data exfiltration"),
+        })
+    }
+    if accessed_root {
+        data.alerts.push(Alert {
+            severity: 0,
+            message: String::from("Critical: Root infiltration detected!"),
+        })
     }
     if data.file_summary.behavior.system.write {
         data.alerts.push(Alert {
@@ -372,7 +402,7 @@ pub async fn start_processing(
         });
     }
     *shared_state.lock().await = Some(data);
-    done_notifier.notify_waiters();
+    done_notifier.add_permits(1);
     Ok(())
 }
 

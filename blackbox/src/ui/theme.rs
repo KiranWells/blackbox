@@ -1,5 +1,5 @@
 use iced::{
-    theme::{Button, Scrollable, Svg, Text},
+    theme::{Button, Scrollable, Text},
     Background, Color,
 };
 
@@ -172,17 +172,6 @@ impl iced::widget::scrollable::StyleSheet for Theme {
                 },
             },
             Scrollable::Custom(_) => unimplemented!(),
-        }
-    }
-}
-
-impl iced::widget::svg::StyleSheet for Theme {
-    type Style = Svg;
-
-    fn appearance(&self, style: &Self::Style) -> iced::widget::svg::Appearance {
-        match style {
-            Svg::Default => Default::default(),
-            Svg::Custom(_) => unimplemented!(),
         }
     }
 }
