@@ -53,6 +53,16 @@ command should be run.
 sudo -E ./target/release/blackbox --command "<COMMAND>" --user $USER
 ```
 
+## Testing
+
+Tests are located in the `tests` directory. The `features` test can be run with `make` and `blackbox --command "./main" ...`. The flags tests can be run by executing them directly with Blackbox:
+
+```bash
+sudo -E ./target/release/blackbox --command "./tests/flags/installer.py" --user $USER
+```
+
+The `profile_vs_strace.sh` and `test_strace_parity.sh` scripts are self-contained, and should be executed from their local directory.
+
 ## Development
 
 ```bash
