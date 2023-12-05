@@ -4,7 +4,7 @@ use color_eyre::Result;
 use iced::{
     font::{self, Family, Weight},
     theme::Button,
-    widget::{button, column, container, row, scrollable, svg, text, tooltip, Row, Space},
+    widget::{button, column, container, image, row, scrollable, text, tooltip, Row, Space},
     Application, Command, Executor, Font, Length, Settings,
 };
 use tokio::sync::{Mutex, Semaphore};
@@ -145,10 +145,10 @@ impl Application for App {
     }
 
     fn view(&self) -> iced::Element<'_, Self::Message, iced::Renderer<Self::Theme>> {
-        let handle = iced::widget::svg::Handle::from_memory(
-            include_bytes!("../../resources/logo.svg").to_vec(),
+        let handle = iced::widget::image::Handle::from_memory(
+            include_bytes!("../../resources/logo.png").to_vec(),
         );
-        let logo = container(svg(handle)).padding(10);
+        let logo = container(image(handle)).padding(10);
 
         let tabs = column(
             vec![Tab::Summary, Tab::File, Tab::Network, Tab::Process]
