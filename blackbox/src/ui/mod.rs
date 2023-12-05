@@ -46,7 +46,6 @@ pub fn run(
         default_font: {
             Font {
                 family: Family::Name("Raleway"),
-                weight: Weight::Medium,
                 ..Font::DEFAULT
             }
         },

@@ -51,6 +51,8 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let args = Args::parse();
+
     let log_file = OpenOptions::new()
         .write(true)
         .truncate(true)
@@ -61,12 +63,10 @@ async fn main() -> Result<()> {
         .init();
     color_eyre::install()?;
 
-    let args = Args::parse();
-
     let mut command = Command::new("/bin/su");
     command
         .arg(args.user)
-        .arg("--login")
+        .arg("--preserve-environment")
         .arg("--shell")
         .arg("/bin/bash")
         .arg("--command")

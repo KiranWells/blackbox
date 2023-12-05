@@ -71,6 +71,12 @@ pub async fn start_processing(
             Exit(ExitData { .. }) => {
                 // the process is done
                 // TODO: handle async events sent after this point
+
+                // add to lists to close
+                for (_, value) in file_hash.iter_mut() {
+                    value.push(i.clone())
+                }
+
                 break;
             }
             Unhandled(UnhandledSyscallData { syscall_id, .. }) => {
@@ -85,7 +91,7 @@ pub async fn start_processing(
 
         let mut fa = FileAccess {
             file_name: None,
-            file_descriptor: 0,
+            file_descriptor: -1,
             data_length: 0,
             read_data: vec![],
             write_data: vec![],
@@ -195,6 +201,16 @@ pub async fn start_processing(
                     } else {
                         // we are missing something, these are not stdio
                         warn!("File descriptor not matched in close! {file_descriptor}");
+                    }
+                }
+                Exit(_) => {
+                    if fa.file_descriptor != -1 {
+                        fa.end_time = event.monotonic_exit_timestamp;
+                        data.file_events.push(fa.clone());
+                    }
+                    if conn_fd != -1 {
+                        conn.end_time = event.monotonic_exit_timestamp;
+                        data.network_events.push(conn.clone());
                     }
                 }
                 Socket(SocketData {
